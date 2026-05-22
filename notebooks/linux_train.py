@@ -65,6 +65,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("linux_train")
 
+VALID_TASKS = {"detection", "keypoints", "classification"}
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
 SUPPORTED_ARCHIVES = {
     ".zip",
@@ -209,6 +211,158 @@ def enforce_gpu():
     torch.backends.cudnn.benchmark = True
 
     return torch.device("cuda:0")
+
+
+# ===================================================================
+# 2b. Training config loader
+# ===================================================================
+
+
+_DEFAULT_TRAIN_CONFIG: dict = {
+    "dataset_path": "",
+    "task": "detection",
+    "model": "resnext",
+    "model_variant": "resnext_nano",
+    "resnext_config": {
+        "neck_channels": 64,
+        "head_depth": 2,
+        "use_ghost": True,
+    },
+    "convnext_config": {
+        "channels": 64,
+        "transformer_depth": 2,
+        "token_count": 100,
+    },
+    "epochs": 100,
+    "batch_size": 0,
+    "img_size": 640,
+    "lr": 0.01,
+    "warmup_epochs": 3,
+    "accumulation_steps": 1,
+    "early_stopping_patience": 50,
+    "device": "auto",
+    "augmentation": True,
+    "augmentation_config": {
+        "hsv": True,
+        "hsv_h_gain": 0.015,
+        "hsv_s_gain": 0.7,
+        "hsv_v_gain": 0.4,
+        "flip": True,
+        "flip_p": 0.5,
+        "scale": True,
+        "scale_min": 0.5,
+        "scale_max": 1.5,
+        "mosaic": True,
+        "mixup": True,
+        "mixup_alpha": 1.5,
+        "copy_paste": False,
+        "copy_paste_p": 0.5,
+        "color_jitter": True,
+    },
+    "detection": {"num_classes": 80, "nms_threshold": 0.45, "conf_threshold": 0.25},
+    "keypoints": {
+        "num_keypoints": 17,
+        "kpt_loss_weight": 1.0,
+        "sigmas": None,
+        "visible_only": True,
+    },
+    "classification": {"dropout": 0.0, "label_smoothing": 0.0},
+    "resume": "",
+    "workspace": "badger_vision_workspace",
+}
+
+
+def load_train_config(config_path: Path | str | None = None) -> dict:
+    """Load training configuration from a YAML file.
+
+    Searches for ``train_config.yaml`` next to this script when
+    *config_path* is ``None``.  Missing keys fall back to built-in
+    defaults so the file can be as sparse as the user likes.
+
+    Returns:
+        Merged configuration dictionary.
+    """
+    import copy
+
+    cfg = copy.deepcopy(_DEFAULT_TRAIN_CONFIG)
+
+    if config_path is None:
+        config_path = Path(__file__).resolve().parent / "train_config.yaml"
+
+    config_path = Path(config_path)
+    if not config_path.exists():
+        log.info("No train_config.yaml found — using built-in defaults")
+        return cfg
+
+    try:
+        import yaml
+    except ImportError:
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "-q", "pyyaml"],
+                stdout=subprocess.DEVNULL,
+            )
+            import yaml
+        except Exception:
+            log.warning("Cannot load YAML config (pyyaml unavailable) — using defaults")
+            return cfg
+
+    with open(config_path) as f:
+        user_cfg = yaml.safe_load(f) or {}
+
+    log.info("Loaded training config from %s", config_path)
+
+    # Merge top-level scalars
+    for key in cfg:
+        if key in user_cfg:
+            if isinstance(cfg[key], dict) and isinstance(user_cfg[key], dict):
+                cfg[key].update(user_cfg[key])
+            else:
+                cfg[key] = user_cfg[key]
+
+    # Validate task
+    if cfg["task"] not in VALID_TASKS:
+        log.error("Invalid task %r in config — must be one of %s", cfg["task"], VALID_TASKS)
+        sys.exit(1)
+
+    return cfg
+
+
+def resolve_device(device_str: str | None):  # -> torch.device
+    """Resolve device string from config into a torch.device.
+
+    ``"auto"`` picks CUDA when available, else CPU.
+    ``"cpu"`` forces CPU.
+    A digit string like ``"0"`` selects that CUDA device.
+    """
+    import torch
+
+    if device_str is None or device_str.lower() == "auto":
+        if torch.cuda.is_available():
+            dev = torch.device("cuda:0")
+            name = torch.cuda.get_device_name(0)
+            mem_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            log.info("GPU : %s  (%.1f GB VRAM)", name, mem_gb)
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
+            return dev
+        log.warning("No CUDA GPU detected — falling back to CPU (training will be slow)")
+        return torch.device("cpu")
+
+    if device_str.lower() == "cpu":
+        return torch.device("cpu")
+
+    # Numeric GPU id(s) — pick first for single-GPU
+    ids = [int(x.strip()) for x in device_str.split(",") if x.strip().isdigit()]
+    if ids:
+        dev = torch.device(f"cuda:{ids[0]}")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        return dev
+
+    return torch.device("cpu")
 
 
 # ===================================================================
@@ -754,46 +908,78 @@ def write_configs(
     img_size: int,
     lr: float,
     model_type: str,
+    train_config: dict | None = None,
 ) -> tuple[Path, Path]:
-    """Write model + data YAML configs."""
+    """Write model + data YAML configs.
+
+    When *train_config* is provided the model variant, neck channels,
+    head depth, ghost mode, warmup epochs, accumulation steps, and
+    early-stopping patience are read from it.
+    """
+    if train_config is None:
+        train_config = _DEFAULT_TRAIN_CONFIG
+
     configs_dir = workspace / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
 
+    warmup = train_config.get("warmup_epochs", 3)
+    accum = train_config.get("accumulation_steps", 1)
+    patience = train_config.get("early_stopping_patience", 50)
+
     if model_type == "resnext":
+        rx = train_config.get("resnext_config", {})
+        variant = train_config.get("model_variant", "resnext_nano")
+        neck_ch = rx.get("neck_channels", 64)
+        head_d = rx.get("head_depth", 2)
+        ghost = str(rx.get("use_ghost", True)).lower()
         model_yaml = textwrap.dedent(f"""\
             model:
               name: "BadgerResNeXt-Train"
               type: "resnext"
-              backbone: "resnext_nano"
-              neck_channels: 64
-              head_depth: 2
-              use_ghost: true
+              backbone: "{variant}"
+              neck_channels: {neck_ch}
+              head_depth: {head_d}
+              use_ghost: {ghost}
               num_classes: {num_classes}
               image_size: {img_size}
             training:
               epochs: {epochs}
               base_lr: {lr}
-              warmup_epochs: 3
-              accumulation_steps: 1
-              early_stopping_patience: 50
+              warmup_epochs: {warmup}
+              accumulation_steps: {accum}
+              early_stopping_patience: {patience}
               batch_size: {batch_size}
         """)
     else:
+        cx = train_config.get("convnext_config", {})
+        variant = train_config.get("model_variant", "nano")
+        # Map variant name to timm backbone
+        _variant_to_backbone = {
+            "nano": "convnext_tiny",
+            "small": "convnext_tiny",
+            "medium": "convnext_small",
+            "large": "convnext_base",
+            "xlarge": "convnext_large",
+        }
+        backbone = _variant_to_backbone.get(variant, "convnext_tiny")
+        channels = cx.get("channels", 64)
+        t_depth = cx.get("transformer_depth", 2)
+        tokens = cx.get("token_count", 100)
         model_yaml = textwrap.dedent(f"""\
             model:
               name: "Badger_vision-Train"
-              backbone: "convnext_tiny"
-              channels: 64
-              transformer_depth: 2
-              token_count: 100
+              backbone: "{backbone}"
+              channels: {channels}
+              transformer_depth: {t_depth}
+              token_count: {tokens}
               num_classes: {num_classes}
               image_size: {img_size}
             training:
               epochs: {epochs}
               base_lr: {lr}
-              warmup_epochs: 3
-              accumulation_steps: 1
-              early_stopping_patience: 50
+              warmup_epochs: {warmup}
+              accumulation_steps: {accum}
+              early_stopping_patience: {patience}
               batch_size: {batch_size}
         """)
 
@@ -875,8 +1061,17 @@ def run_training(
     epochs: int,
     batch_size: int,
     resume: str | None = None,
+    task: str = "detection",
+    train_config: dict | None = None,
 ) -> None:
-    """Full training loop with tqdm progress bars and epoch snapshots."""
+    """Full training loop with tqdm progress bars and epoch snapshots.
+
+    Args:
+        task: ``"detection"``, ``"keypoints"``, or ``"classification"``.
+        train_config: Merged config dict from ``load_train_config()``.
+            When provided, augmentation and task-specific settings are read
+            from it.
+    """
     import torch
     from tqdm import tqdm
 
@@ -887,21 +1082,27 @@ def run_training(
     from badger_vision.utils.profiler import model_summary
     from badger_vision.utils.yaml_utils import load_yaml
 
+    if train_config is None:
+        train_config = _DEFAULT_TRAIN_CONFIG
+
     config = load_yaml(str(model_cfg_path))
     data_config = load_yaml(str(data_cfg_path))
     img_size = config.get("model", {}).get("image_size", 640)
 
-    # Model
+    # Augmentation toggle from config
+    augment_enabled = bool(train_config.get("augmentation", True))
+
+    # Move model to the requested device explicitly
     pv = Badger_vision(str(model_cfg_path))
-    model = pv.model
+    model = pv.model.to(device)
     summary = model_summary(model, input_size=(1, 3, img_size, img_size))
 
-    # Dataset
+    # Dataset — pass augmentation flag from config
     train_dataset = COCODataset(
         img_dir=data_config["img_dir"],
         ann_file=data_config["ann_file"],
         img_size=img_size,
-        augment=True,
+        augment=augment_enabled,
     )
 
     env_config = get_optimal_env_config()
@@ -968,7 +1169,7 @@ def run_training(
         summary["flops_G"],
         summary["size_mb"],
     )
-    log.info("  Task       : detection")
+    log.info("  Task       : %s", task)
     log.info("  Epochs     : %d (starting from %d)", epochs, start_epoch)
     log.info("  Batch Size : %d", batch_size)
     log.info("  LR         : %.6f", config["training"]["base_lr"])
@@ -976,6 +1177,7 @@ def run_training(
     log.info("  Train Imgs : %d", num_train)
     log.info("  Val Imgs   : %d", num_val)
     log.info("  Workers    : %d", num_workers)
+    log.info("  Augment    : %s", augment_enabled)
     log.info("  AMP        : %s", device.type == "cuda")
     log.info("  Device     : %s", device)
     log.info("  Output     : %s", run_dir)
@@ -1208,6 +1410,9 @@ def main():
         description="Badger_vision — Production-Ready Linux Training",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
+            All settings are loaded from notebooks/train_config.yaml by
+            default.  CLI arguments override the config file.
+
             Dataset formats (auto-detected):
               Badger Factory - Keypoint Detection   yolo/images/*.7z + labels/*.7z
               Badger Factory - Object Detection      (same layout)
@@ -1216,7 +1421,7 @@ def main():
               Plain YOLO / COCO                       already extracted on disk
 
             Examples:
-              %(prog)s                                          # synthetic demo
+              %(prog)s                                          # uses train_config.yaml
               %(prog)s /data/badger_factory_export/ --task detection
               %(prog)s /data/my_dataset.7z --task keypoints --epochs 200
               %(prog)s /data/classifier_export/ --task classification
@@ -1229,25 +1434,43 @@ def main():
         type=str,
         nargs="?",
         default=None,
-        help="Path to dataset folder or archive (.zip .7z .tar.gz .rar). Omit to run a quick synthetic demo.",
+        help="Path to dataset folder or archive. Omit to use train_config.yaml dataset_path (or synthetic demo).",
     )
+    parser.add_argument("--config", type=str, default=None, help="Path to train_config.yaml (auto-detected if omitted)")
     parser.add_argument(
         "--task",
         type=str,
         default=None,
         choices=["detection", "keypoints", "classification"],
-        help="Training task (prompted interactively if omitted)",
+        help="Training task (uses config value if omitted)",
     )
-    parser.add_argument("--epochs", type=int, default=100, help="Training epochs (default: 100)")
-    parser.add_argument("--batch-size", type=int, default=0, help="Batch size (0 = auto from GPU VRAM)")
-    parser.add_argument("--img-size", type=int, default=640, help="Image size (default: 640)")
-    parser.add_argument("--lr", type=float, default=0.01, help="Learning rate (default: 0.01)")
-    parser.add_argument("--model", type=str, default="resnext", choices=["resnext", "convnext"], help="Architecture")
+    parser.add_argument("--epochs", type=int, default=None, help="Training epochs (uses config value if omitted)")
+    parser.add_argument("--batch-size", type=int, default=None, help="Batch size (0 = auto from GPU VRAM)")
+    parser.add_argument("--img-size", type=int, default=None, help="Image size")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
+    parser.add_argument("--model", type=str, default=None, choices=["resnext", "convnext"], help="Architecture")
     parser.add_argument("--resume", type=str, default=None, help="Checkpoint path to resume from")
-    parser.add_argument("--workspace", type=str, default="badger_vision_workspace", help="Working directory")
+    parser.add_argument("--workspace", type=str, default=None, help="Working directory")
     parser.add_argument("--no-setup", action="store_true", help="Skip auto-setup")
 
     args = parser.parse_args()
+
+    # ── Load config (train_config.yaml) ──
+    tcfg = load_train_config(args.config)
+
+    # CLI args override config values
+    dataset_arg = args.dataset
+    if dataset_arg is None and tcfg.get("dataset_path"):
+        dataset_arg = tcfg["dataset_path"]
+
+    task = args.task or tcfg.get("task")
+    epochs = args.epochs if args.epochs is not None else tcfg.get("epochs", 100)
+    batch_size = args.batch_size if args.batch_size is not None else tcfg.get("batch_size", 0)
+    img_size = args.img_size if args.img_size is not None else tcfg.get("img_size", 640)
+    lr = args.lr if args.lr is not None else tcfg.get("lr", 0.01)
+    model_type = args.model or tcfg.get("model", "resnext")
+    resume = args.resume or tcfg.get("resume") or None
+    workspace_str = args.workspace or tcfg.get("workspace", "badger_vision_workspace")
 
     # ── Auto-setup ──
     script_dir = Path(__file__).resolve().parent
@@ -1255,12 +1478,16 @@ def main():
     if not args.no_setup:
         auto_setup(repo_root)
 
-    # ── GPU ──
-    device = enforce_gpu()
+    # ── Device (from config) ──
+    device = resolve_device(tcfg.get("device", "auto"))
     import torch
 
+    if device.type != "cuda":
+        log.warning(
+            'No GPU will be used — training will be slow!\n  Set device: "auto" in train_config.yaml to enable GPU.'
+        )
+
     # ── Task picker ──
-    task = args.task
     if task is None:
         print("\n  What would you like to train?\n")
         print("    1) Object Detection")
@@ -1276,11 +1503,11 @@ def main():
     log.info("Task: %s", task)
 
     # ── Workspace ──
-    workspace = Path(args.workspace).resolve()
+    workspace = Path(workspace_str).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
 
     # ── Dataset ──
-    use_synthetic = args.dataset is None
+    use_synthetic = not dataset_arg
     if use_synthetic:
         log.info("No dataset supplied — generating synthetic demo data")
         if task is None:
@@ -1288,7 +1515,7 @@ def main():
             log.info("Defaulting task to: detection")
         data_info = generate_synthetic_dataset(workspace)
     else:
-        dataset_path = Path(args.dataset).resolve()
+        dataset_path = Path(dataset_arg).resolve()
         if not dataset_path.exists():
             log.error("Dataset path does not exist: %s", dataset_path)
             sys.exit(1)
@@ -1345,22 +1572,26 @@ def main():
     num_train = count_images(data_info["train_ann_file"])
     log.info("Classes: %d  |  Training images: %d", num_classes, num_train)
 
-    batch_size = args.batch_size
     if batch_size <= 0:
-        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        batch_size = auto_batch_size(gpu_mem, args.img_size)
-        log.info("Auto batch size: %d  (%.1f GB VRAM)", batch_size, gpu_mem)
+        if torch.cuda.is_available():
+            gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            batch_size = auto_batch_size(gpu_mem, img_size)
+            log.info("Auto batch size: %d  (%.1f GB VRAM)", batch_size, gpu_mem)
+        else:
+            batch_size = 2
+            log.info("CPU mode — batch size: %d", batch_size)
 
     # ── Configs ──
     model_cfg, data_cfg = write_configs(
         workspace,
         data_info,
         num_classes,
-        epochs=args.epochs,
+        epochs=epochs,
         batch_size=batch_size,
-        img_size=args.img_size,
-        lr=args.lr,
-        model_type=args.model,
+        img_size=img_size,
+        lr=lr,
+        model_type=model_type,
+        train_config=tcfg,
     )
 
     # ── Train ──
@@ -1369,9 +1600,11 @@ def main():
         data_cfg,
         data_info,
         device,
-        epochs=args.epochs,
+        epochs=epochs,
         batch_size=batch_size,
-        resume=args.resume,
+        resume=resume,
+        task=task,
+        train_config=tcfg,
     )
 
 
