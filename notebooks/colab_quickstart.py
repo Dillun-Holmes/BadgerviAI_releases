@@ -34,7 +34,7 @@ from PIL import Image  # noqa: E402
 print(f"PyTorch : {torch.__version__}")
 if torch.cuda.is_available():
     gpu_name = torch.cuda.get_device_name(0)
-    gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1024**3
+    gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
     print(f"CUDA    : {torch.version.cuda} — {gpu_name} ({gpu_mem:.1f} GB)")
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -123,7 +123,7 @@ if DATASET_PATH and Path(DATASET_PATH).exists():
     print(f"Classes: {num_classes}  |  Training images: {num_train}")
 
     if BATCH_SIZE <= 0 and torch.cuda.is_available():
-        gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
         BATCH_SIZE = lt.auto_batch_size(gpu_mem, IMG_SIZE)
         print(f"Auto batch size: {BATCH_SIZE}")
     elif BATCH_SIZE <= 0:
