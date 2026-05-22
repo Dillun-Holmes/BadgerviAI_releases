@@ -8,7 +8,7 @@
 #
 # Setup (first time only):
 #   python -m venv .venv && source .venv/bin/activate
-#   pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.1.0/badger_vision-4.1.0-py3-none-any.whl
+#   pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.3.3/badger_vision-4.3.3-py3-none-any.whl
 #   pip install tqdm py7zr rarfile
 #   python notebooks/local_quickstart.py /path/to/dataset --task detection
 #
