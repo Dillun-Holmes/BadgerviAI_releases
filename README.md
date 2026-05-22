@@ -1,7 +1,7 @@
 <p align="center">
-  <h1 align="center">BadgerviAI — PhantomVision Releases</h1>
+  <h1 align="center">BadgerviAI Releases</h1>
   <p align="center">
-    <strong>Download and install PhantomVision directly — no source code needed.</strong>
+    <strong>Download and install BadgerviAI directly — no source code needed.</strong>
   </p>
 </p>
 
@@ -18,7 +18,7 @@
 ### Option A — Install directly with pip (recommended)
 
 ```bash
-pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v1.0.0/phantomvision-4.0.0-py3-none-any.whl
+pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v1.0.0/badgerviai-4.0.0-py3-none-any.whl
 ```
 
 ### Option B — Download and install locally
@@ -28,7 +28,7 @@ pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/downlo
 3. Install with pip:
 
 ```bash
-pip install phantomvision-4.0.0-py3-none-any.whl
+pip install badgerviai-4.0.0-py3-none-any.whl
 ```
 
 ---
@@ -45,23 +45,23 @@ pip install phantomvision-4.0.0-py3-none-any.whl
 After installing, use the CLI:
 
 ```bash
-phantom --help
+badgerviai --help
 ```
 
 Or use the Python API:
 
 ```python
-from phantomvision.core.api import PhantomVision
+from badgerviai.core.api import BadgerviAI
 
-model = PhantomVision("path/to/config.yaml")
+model = BadgerviAI("path/to/config.yaml")
 predictions = model.predict("path/to/image.jpg")
 ```
 
 ---
 
-## What is PhantomVision?
+## What is BadgerviAI?
 
-PhantomVision is a production-grade object detection framework featuring:
+BadgerviAI is a production-grade object detection framework featuring:
 
 - **Query-based NMS-free detection** with Hungarian matching
 - **Self-correcting training** that tracks and fixes its own failure modes
