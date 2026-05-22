@@ -52,6 +52,14 @@ early_stopping_patience: 50
 # "0,1"  = multi-GPU DDP on GPUs 0 and 1
 device: "auto"
 
+# ── Memory / Performance ──────────────────────────────────
+# Number of dataloader workers. 0 = auto (based on CPU cores + RAM).
+# Lower this if training uses too much RAM.
+num_workers: 0
+# Pin memory for faster GPU transfers. Set to false on low-RAM systems.
+# "auto" = true if GPU available and system has ≥ 8 GB RAM.
+pin_memory: "auto"
+
 # ── Augmentation ───────────────────────────────────────────
 # Master switch: set to false to disable ALL augmentation.
 augmentation: true

@@ -893,6 +893,15 @@ def count_images(ann_file: str) -> int:
 def auto_batch_size(gpu_mem_gb: float, img_size: int) -> int:
     mem_per_img = (img_size / 640) ** 2 * 0.06
     max_batch = max(1, int(gpu_mem_gb * 0.7 / mem_per_img))
+
+    # Also cap based on system RAM — training needs RAM for workers, data, etc.
+    try:
+        sys_ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024**3)
+        ram_batch_cap = max(1, int(sys_ram_gb * 0.4 / mem_per_img))
+        max_batch = min(max_batch, ram_batch_cap)
+    except Exception:
+        pass
+
     for bs in [32, 24, 16, 12, 8, 4, 2, 1]:
         if bs <= max_batch:
             return bs
@@ -1107,12 +1116,21 @@ def run_training(
 
     env_config = get_optimal_env_config()
     num_workers = min(env_config["num_workers"], multiprocessing.cpu_count())
+    use_pin_memory = env_config.get("pin_memory", torch.cuda.is_available())
+
+    # Allow train_config overrides for num_workers and pin_memory
+    cfg_workers = train_config.get("num_workers", 0)
+    if cfg_workers > 0:
+        num_workers = cfg_workers
+    cfg_pin = train_config.get("pin_memory", "auto")
+    if cfg_pin is not None and str(cfg_pin).lower() != "auto":
+        use_pin_memory = bool(cfg_pin)
     train_loader = create_dataloader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=use_pin_memory,
     )
 
     # Validation
@@ -1129,7 +1147,7 @@ def run_training(
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
-            pin_memory=True,
+            pin_memory=use_pin_memory,
         )
 
     from badger_vision.core.api import detection_loss_fn
@@ -1177,6 +1195,12 @@ def run_training(
     log.info("  Train Imgs : %d", num_train)
     log.info("  Val Imgs   : %d", num_val)
     log.info("  Workers    : %d", num_workers)
+    log.info("  Pin Memory : %s", use_pin_memory)
+    try:
+        _sys_ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024**3)
+        log.info("  System RAM : %.1f GB", _sys_ram)
+    except Exception:
+        pass
     log.info("  Augment    : %s", augment_enabled)
     log.info("  AMP        : %s", device.type == "cuda")
     log.info("  Device     : %s", device)
