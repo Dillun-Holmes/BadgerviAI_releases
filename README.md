@@ -18,7 +18,7 @@
 ### Option A — Install directly with pip (recommended)
 
 ```bash
-pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.0.0/badger_vision-4.0.0-py3-none-any.whl
+pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.1.0/badger_vision-4.1.0-py3-none-any.whl
 ```
 
 ### Option B — Download and install locally
@@ -28,7 +28,7 @@ pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/downlo
 3. Install with pip:
 
 ```bash
-pip install badger_vision-4.0.0-py3-none-any.whl
+pip install badger_vision-4.1.0-py3-none-any.whl
 ```
 
 ---

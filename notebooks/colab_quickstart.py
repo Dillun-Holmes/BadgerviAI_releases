@@ -6,7 +6,7 @@
 # plain zip/7z/tar archives, or already-extracted folders.
 #
 # Usage in Colab:
-#   !pip install -q https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.0.0/badger_vision-4.0.0-py3-none-any.whl
+#   !pip install -q https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.1.0/badger_vision-4.1.0-py3-none-any.whl
 #   %run colab_quickstart.py
 # -----------------------------------------------------------
 from __future__ import annotations
