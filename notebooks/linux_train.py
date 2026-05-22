@@ -149,7 +149,7 @@ def enforce_gpu():
         sys.exit(1)
 
     name = torch.cuda.get_device_name(0)
-    mem_gb = torch.cuda.get_device_properties(0).total_mem / 1024**3
+    mem_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
     log.info("GPU : %s  (%.1f GB VRAM)", name, mem_gb)
     log.info("CUDA: %s  |  PyTorch: %s", torch.version.cuda, torch.__version__)
 
@@ -1176,7 +1176,7 @@ def main():
 
     batch_size = args.batch_size
     if batch_size <= 0:
-        gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
         batch_size = auto_batch_size(gpu_mem, args.img_size)
         log.info("Auto batch size: %d  (%.1f GB VRAM)", batch_size, gpu_mem)
 

@@ -50,7 +50,7 @@ print(f"PyTorch : {torch.__version__}")
 
 if torch.cuda.is_available():
     gpu_name = torch.cuda.get_device_name(0)
-    gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1024**3
+    gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
     print(f"CUDA    : {torch.version.cuda} — {gpu_name} ({gpu_mem:.1f} GB)")
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -135,7 +135,7 @@ def _run_real_dataset(args: argparse.Namespace) -> None:
 
     batch_size = args.batch_size
     if batch_size <= 0 and torch.cuda.is_available():
-        vram = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        vram = torch.cuda.get_device_properties(0).total_memory / 1024**3
         batch_size = lt.auto_batch_size(vram, args.img_size)
         print(f"Auto batch size: {batch_size}")
     elif batch_size <= 0:
