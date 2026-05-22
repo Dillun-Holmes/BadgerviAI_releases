@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">BadgerviAI Releases</h1>
+  <h1 align="center">BadgerAI Releases</h1>
   <p align="center">
     <strong>Download and install BadgerviAI directly — no source code needed.</strong>
   </p>
