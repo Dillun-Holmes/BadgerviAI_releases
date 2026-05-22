@@ -18,7 +18,7 @@
 ### Option A — Install directly with pip (recommended)
 
 ```bash
-pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v1.0.0/badgerviai-4.0.0-py3-none-any.whl
+pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.0.0/badger_vision-4.0.0-py3-none-any.whl
 ```
 
 ### Option B — Download and install locally
@@ -28,7 +28,7 @@ pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/downlo
 3. Install with pip:
 
 ```bash
-pip install badgerviai-4.0.0-py3-none-any.whl
+pip install badger_vision-4.0.0-py3-none-any.whl
 ```
 
 ---
@@ -45,15 +45,15 @@ pip install badgerviai-4.0.0-py3-none-any.whl
 After installing, use the CLI:
 
 ```bash
-badgerviai --help
+badger --help
 ```
 
 Or use the Python API:
 
 ```python
-from badgerviai.core.api import BadgerviAI
+from badger_vision.core.api import Badger_vision
 
-model = BadgerviAI("path/to/config.yaml")
+model = Badger_vision("path/to/config.yaml")
 predictions = model.predict("path/to/image.jpg")
 ```
 

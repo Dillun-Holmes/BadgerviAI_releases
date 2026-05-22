@@ -6,7 +6,7 @@
 # plain zip/7z/tar archives, Kaggle datasets, or synthetic demo.
 #
 # Usage on Kaggle:
-#   !pip install -q git+https://github.com/Dillun-Holmes/AI_vision_model.git
+#   !pip install -q https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.0.0/badger_vision-4.0.0-py3-none-any.whl
 #   %run kaggle_quickstart.py
 # -----------------------------------------------------------
 from __future__ import annotations
