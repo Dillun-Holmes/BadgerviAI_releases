@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------
-# PhantomVision — Local PC Quickstart (Python script)
+# Badger_vision — Local PC Quickstart (Python script)
 #
 # Works on Windows, macOS, and Linux (CPU, CUDA, or Apple MPS).
-# Supports Phantom Factory datasets (YOLO / COCO / classifier),
+# Supports Badger Factory datasets (YOLO / COCO / classifier),
 # plain zip/7z/tar archives, or already-extracted folders.
 #
 # Setup (first time only):
 #   python -m venv .venv && source .venv/bin/activate
-#   pip install -e .          # from repo root
+#   pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.0.0/badger_vision-4.0.0-py3-none-any.whl
 #   pip install tqdm py7zr rarfile
 #   python notebooks/local_quickstart.py /path/to/dataset --task detection
 #
@@ -40,9 +40,9 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from phantomvision import PhantomVision  # noqa: E402
-from phantomvision.models.phantom_resnext import PhantomResNeXtModel  # noqa: E402
-from phantomvision.utils.profiler import model_summary  # noqa: E402
+from badger_vision import Badger_vision  # noqa: E402
+from badger_vision.models.badger_resnext import BadgerResNeXtModel  # noqa: E402
+from badger_vision.utils.profiler import model_summary  # noqa: E402
 
 # ── 1. Detect device ──────────────────────────────────────
 print(f"Python  : {sys.version.split()[0]}")
@@ -76,7 +76,7 @@ spec.loader.exec_module(lt)
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="PhantomVision — Local PC Quickstart",
+        description="Badger_vision — Local PC Quickstart",
     )
     p.add_argument(
         "dataset", nargs="?", default="",
@@ -97,7 +97,7 @@ def _run_real_dataset(args: argparse.Namespace) -> None:
     import shutil
 
     dataset_path = Path(args.dataset).resolve()
-    workspace = Path("phantomvision_workspace").resolve()
+    workspace = Path("badger_vision_workspace").resolve()
     workspace.mkdir(parents=True, exist_ok=True)
 
     if dataset_path.is_file() and lt.is_archive(dataset_path):
@@ -112,14 +112,14 @@ def _run_real_dataset(args: argparse.Namespace) -> None:
     fmt = lt.detect_format(dataset_root)
     print(f"Detected format: {fmt}")
 
-    if fmt == "phantom_yolo":
+    if fmt == "badger_yolo":
         classes_txt = dataset_root / "classes.txt"
-        data_info = lt.prepare_phantom_yolo(
+        data_info = lt.prepare_badger_yolo(
             dataset_root, workspace,
             classes_txt if classes_txt.exists() else None,
         )
-    elif fmt == "phantom_classifier":
-        data_info = lt.prepare_phantom_classifier(dataset_root, workspace)
+    elif fmt == "badger_classifier":
+        data_info = lt.prepare_badger_classifier(dataset_root, workspace)
     elif fmt == "coco_archive":
         data_info = lt.prepare_coco_archive(dataset_root, workspace)
     elif fmt == "yolo_flat":
@@ -153,7 +153,7 @@ def _run_real_dataset(args: argparse.Namespace) -> None:
 
 def _run_synthetic_demo() -> None:
     """Run synthetic demo (profile, train, infer, benchmark, export)."""
-    ROOT = Path("phantomvision_demo")
+    ROOT = Path("badger_vision_demo")
     CONFIGS = ROOT / "configs"
     DATA = ROOT / "data"
     IMGS = DATA / "images"
@@ -162,7 +162,7 @@ def _run_synthetic_demo() -> None:
 
     (CONFIGS / "resnext_nano.yaml").write_text(textwrap.dedent("""\
         model:
-          name: "PhantomResNeXt-Nano"
+          name: "BadgerResNeXt-Nano"
           type: "resnext"
           backbone: "resnext_nano"
           neck_channels: 64
@@ -180,7 +180,7 @@ def _run_synthetic_demo() -> None:
 
     (CONFIGS / "convnext_nano.yaml").write_text(textwrap.dedent("""\
         model:
-          name: "PhantomVision-Nano"
+          name: "Badger_vision-Nano"
           backbone: "convnext_tiny"
           channels: 64
           transformer_depth: 2
@@ -218,12 +218,12 @@ def _run_synthetic_demo() -> None:
 
     # Model profiling
     for variant in ["resnext_pico", "resnext_nano", "resnext_small"]:
-        m = PhantomResNeXtModel(variant=variant, num_classes=80)
+        m = BadgerResNeXtModel(variant=variant, num_classes=80)
         s = model_summary(m)
         print(f"{variant:>16s}  |  {s['params_M']}M params  |  {s['flops_G']} GFLOPs  |  {s['size_mb']} MB")
 
     # Training
-    model = PhantomVision(str(CONFIGS / "resnext_nano.yaml"))
+    model = Badger_vision(str(CONFIGS / "resnext_nano.yaml"))
     model.train(data=str(CONFIGS / "data.yaml"), task="detection")
 
     # Inference
@@ -249,7 +249,7 @@ def _run_synthetic_demo() -> None:
     print(f"Exported model.onnx ({size_mb:.1f} MB)")
 
     # ConvNeXt
-    convnext_model = PhantomVision(str(CONFIGS / "convnext_nano.yaml"))
+    convnext_model = Badger_vision(str(CONFIGS / "convnext_nano.yaml"))
     preds = convnext_model.predict(str(IMGS / "img_0000.jpg"))
     for key, val in preds.items():
         print(f"{key}: shape={val.shape}")
