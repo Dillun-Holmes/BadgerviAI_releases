@@ -82,12 +82,22 @@ def auto_setup(repo_root: Path) -> None:
     """Create a venv and install Badger_vision if not already set up."""
     if _in_virtualenv():
         log.info("Virtual-env active: %s", sys.prefix)
-        # Make sure tqdm + archive libs are present
         _ensure_packages(["tqdm", "py7zr", "rarfile"])
         return
 
+    # Check if badger_vision is already importable in the current Python
+    try:
+        import badger_vision  # noqa: F401
+        log.info("badger_vision already installed in: %s", sys.executable)
+        _ensure_packages(["tqdm", "py7zr", "rarfile"])
+        return
+    except ImportError:
+        pass
+
     venv_dir = repo_root / ".venv"
-    if venv_dir.exists():
+    venv_python = venv_dir / "bin" / "python"
+
+    if venv_dir.exists() and venv_python.exists():
         log.info(
             "A virtual environment already exists at %s\n"
             "  Activate it and re-run:\n"
@@ -96,10 +106,14 @@ def auto_setup(repo_root: Path) -> None:
         )
         sys.exit(1)
 
+    if venv_dir.exists() and not venv_python.exists():
+        log.warning("Incomplete .venv at %s — removing and recreating", venv_dir)
+        shutil.rmtree(venv_dir)
+
     log.info("No virtual environment detected — creating at %s ...", venv_dir)
     subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
     pip = str(venv_dir / "bin" / "pip")
-    python = str(venv_dir / "bin" / "python")
+    python = str(venv_python)
 
     log.info("Installing Badger_vision + training extras ...")
     subprocess.check_call(
@@ -1042,7 +1056,81 @@ def run_training(model_cfg_path: Path, data_cfg_path: Path, data_info: dict,
 
 
 # ===================================================================
-# 9. CLI entry point
+# 9. Synthetic demo dataset
+# ===================================================================
+
+
+def generate_synthetic_dataset(workspace: Path) -> dict:
+    """Create a tiny COCO dataset with random images for demo purposes."""
+    import numpy as np
+    from PIL import Image
+
+    data_dir = workspace / "synthetic_demo"
+    img_dir = data_dir / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    coco = {
+        "images": [],
+        "annotations": [],
+        "categories": [{"id": 1, "name": "object"}],
+    }
+    ann_id = 0
+    for i in range(8):
+        fname = f"img_{i:04d}.jpg"
+        img = Image.fromarray(
+            np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
+        )
+        img.save(str(img_dir / fname))
+        coco["images"].append(
+            {"id": i, "file_name": fname, "width": 640, "height": 640}
+        )
+        for _ in range(2):
+            x = int(np.random.randint(0, 400))
+            y = int(np.random.randint(0, 400))
+            w = int(np.random.randint(30, 200))
+            h = int(np.random.randint(30, 200))
+            coco["annotations"].append(
+                {
+                    "id": ann_id,
+                    "image_id": i,
+                    "category_id": 1,
+                    "bbox": [x, y, w, h],
+                    "area": w * h,
+                    "iscrowd": 0,
+                }
+            )
+            ann_id += 1
+
+    ann_file = data_dir / "annotations.json"
+    ann_file.write_text(json.dumps(coco))
+
+    # Split: first 6 train, last 2 val
+    train_ann = {
+        "images": coco["images"][:6],
+        "annotations": [a for a in coco["annotations"] if a["image_id"] < 6],
+        "categories": coco["categories"],
+    }
+    val_ann = {
+        "images": coco["images"][6:],
+        "annotations": [a for a in coco["annotations"] if a["image_id"] >= 6],
+        "categories": coco["categories"],
+    }
+    train_file = data_dir / "train_annotations.json"
+    val_file = data_dir / "val_annotations.json"
+    train_file.write_text(json.dumps(train_ann))
+    val_file.write_text(json.dumps(val_ann))
+
+    log.info("Synthetic demo dataset created at %s (8 images, 1 class)", data_dir)
+    return {
+        "train_img_dir": str(img_dir),
+        "train_ann_file": str(train_file),
+        "val_img_dir": str(img_dir),
+        "val_ann_file": str(val_file),
+    }
+
+
+# ===================================================================
+# 10. CLI entry point
 # ===================================================================
 
 
@@ -1067,8 +1155,9 @@ def main():
         """),
     )
     parser.add_argument(
-        "dataset", type=str,
-        help="Path to dataset folder or archive (.zip .7z .tar.gz .rar)",
+        "dataset", type=str, nargs="?", default=None,
+        help="Path to dataset folder or archive (.zip .7z .tar.gz .rar). "
+             "Omit to run a quick synthetic demo.",
     )
     parser.add_argument(
         "--task", type=str, default=None,
@@ -1117,53 +1206,61 @@ def main():
     workspace.mkdir(parents=True, exist_ok=True)
 
     # ── Dataset ──
-    dataset_path = Path(args.dataset).resolve()
-    if not dataset_path.exists():
-        log.error("Dataset path does not exist: %s", dataset_path)
-        sys.exit(1)
-
-    # Extract top-level archive if needed
-    if dataset_path.is_file() and is_archive(dataset_path):
-        extract_dest = workspace / "dataset"
-        if extract_dest.exists():
-            shutil.rmtree(extract_dest)
-        dataset_root = extract_archive(dataset_path, extract_dest)
+    use_synthetic = args.dataset is None
+    if use_synthetic:
+        log.info("No dataset supplied — generating synthetic demo data")
+        if task is None:
+            task = "detection"
+            log.info("Defaulting task to: detection")
+        data_info = generate_synthetic_dataset(workspace)
     else:
-        dataset_root = dataset_path
+        dataset_path = Path(args.dataset).resolve()
+        if not dataset_path.exists():
+            log.error("Dataset path does not exist: %s", dataset_path)
+            sys.exit(1)
 
-    # Navigate into the right sub-folder for the task
-    dataset_root = resolve_dataset_root(dataset_root, task)
-    log.info("Dataset root: %s", dataset_root)
+        # Extract top-level archive if needed
+        if dataset_path.is_file() and is_archive(dataset_path):
+            extract_dest = workspace / "dataset"
+            if extract_dest.exists():
+                shutil.rmtree(extract_dest)
+            dataset_root = extract_archive(dataset_path, extract_dest)
+        else:
+            dataset_root = dataset_path
 
-    # ── Detect format & prepare ──
-    fmt = detect_format(dataset_root)
-    log.info("Detected format: %s", fmt)
+        # Navigate into the right sub-folder for the task
+        dataset_root = resolve_dataset_root(dataset_root, task)
+        log.info("Dataset root: %s", dataset_root)
 
-    if fmt == "badger_yolo":
-        classes_txt = dataset_root / "classes.txt"
-        if not classes_txt.exists():
-            classes_txt = None
-        data_info = prepare_badger_yolo(dataset_root, workspace, classes_txt)
-    elif fmt == "badger_classifier":
-        data_info = prepare_badger_classifier(dataset_root, workspace)
-    elif fmt == "coco_archive":
-        data_info = prepare_coco_archive(dataset_root, workspace)
-    elif fmt == "yolo_flat":
-        data_info = prepare_yolo_flat(dataset_root, workspace)
-    elif fmt == "coco_flat":
-        data_info = prepare_coco_flat(dataset_root, workspace)
-    else:
-        log.error(
-            "Could not detect dataset format in %s\n"
-            "  Expected one of:\n"
-            "    - Badger Factory YOLO:   images/{train,val}.7z + labels/{train,val}.7z\n"
-            "    - Badger Factory Class.: evolving_ds_*/{train,val}.7z\n"
-            "    - COCO archive:           {train,val}.7z with coco_instances.json\n"
-            "    - Plain YOLO:             images/ + labels/ dirs\n"
-            "    - Plain COCO:             annotations.json + images/",
-            dataset_root,
-        )
-        sys.exit(1)
+        # ── Detect format & prepare ──
+        fmt = detect_format(dataset_root)
+        log.info("Detected format: %s", fmt)
+
+        if fmt == "badger_yolo":
+            classes_txt = dataset_root / "classes.txt"
+            if not classes_txt.exists():
+                classes_txt = None
+            data_info = prepare_badger_yolo(dataset_root, workspace, classes_txt)
+        elif fmt == "badger_classifier":
+            data_info = prepare_badger_classifier(dataset_root, workspace)
+        elif fmt == "coco_archive":
+            data_info = prepare_coco_archive(dataset_root, workspace)
+        elif fmt == "yolo_flat":
+            data_info = prepare_yolo_flat(dataset_root, workspace)
+        elif fmt == "coco_flat":
+            data_info = prepare_coco_flat(dataset_root, workspace)
+        else:
+            log.error(
+                "Could not detect dataset format in %s\n"
+                "  Expected one of:\n"
+                "    - Badger Factory YOLO:   images/{train,val}.7z + labels/{train,val}.7z\n"
+                "    - Badger Factory Class.: evolving_ds_*/{train,val}.7z\n"
+                "    - COCO archive:           {train,val}.7z with coco_instances.json\n"
+                "    - Plain YOLO:             images/ + labels/ dirs\n"
+                "    - Plain COCO:             annotations.json + images/",
+                dataset_root,
+            )
+            sys.exit(1)
 
     log.info("Train: %s", data_info["train_img_dir"])
     if data_info.get("val_img_dir"):
