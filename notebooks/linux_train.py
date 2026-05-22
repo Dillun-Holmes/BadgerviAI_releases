@@ -101,8 +101,20 @@ def auto_setup(repo_root: Path) -> None:
         _ensure_packages(["tqdm", "py7zr", "rarfile"])
         return
 
+    # Check if badger_vision is already importable in the current Python
+    try:
+        import badger_vision  # noqa: F401
+
+        log.info("badger_vision already installed in: %s", sys.executable)
+        _ensure_packages(["tqdm", "py7zr", "rarfile"])
+        return
+    except ImportError:
+        pass
+
     venv_dir = repo_root / ".venv"
-    if venv_dir.exists():
+    venv_python = venv_dir / "bin" / "python"
+
+    if venv_dir.exists() and venv_python.exists():
         log.info(
             "A virtual environment already exists at %s\n"
             "  Activate it and re-run:\n"
@@ -113,10 +125,14 @@ def auto_setup(repo_root: Path) -> None:
         )
         sys.exit(1)
 
+    if venv_dir.exists() and not venv_python.exists():
+        log.warning("Incomplete .venv at %s — removing and recreating", venv_dir)
+        shutil.rmtree(venv_dir)
+
     log.info("No virtual environment detected — creating at %s ...", venv_dir)
     subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
     pip = str(venv_dir / "bin" / "pip")
-    python = str(venv_dir / "bin" / "python")
+    python = str(venv_python)
 
     log.info("Installing Badger_vision + training extras ...")
     subprocess.check_call(
@@ -1147,13 +1163,13 @@ def _prompt_dataset_path(task: str) -> str | None:
 # ===================================================================
 
 
-def _generate_synthetic_dataset(workspace: Path) -> dict:
-    """Create a tiny COCO-format dataset for a quick demo run."""
+def generate_synthetic_dataset(workspace: Path) -> dict:
+    """Create a tiny COCO dataset with random images for demo purposes."""
     import numpy as np
     from PIL import Image
 
-    demo_dir = workspace / "synthetic_demo"
-    img_dir = demo_dir / "images"
+    data_dir = workspace / "synthetic_demo"
+    img_dir = data_dir / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
 
     coco: dict = {
@@ -1164,11 +1180,9 @@ def _generate_synthetic_dataset(workspace: Path) -> dict:
     ann_id = 0
     for i in range(8):
         fname = f"img_{i:04d}.jpg"
-        arr = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
-        Image.fromarray(arr).save(str(img_dir / fname))
-        coco["images"].append(
-            {"id": i, "file_name": fname, "width": 640, "height": 640},
-        )
+        img = Image.fromarray(np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8))
+        img.save(str(img_dir / fname))
+        coco["images"].append({"id": i, "file_name": fname, "width": 640, "height": 640})
         for _ in range(random.randint(1, 4)):
             x = random.randint(0, 400)
             y = random.randint(0, 400)
@@ -1186,19 +1200,31 @@ def _generate_synthetic_dataset(workspace: Path) -> dict:
             )
             ann_id += 1
 
-    ann_file = demo_dir / "annotations.json"
+    ann_file = data_dir / "annotations.json"
     ann_file.write_text(json.dumps(coco))
-    log.info(
-        "Synthetic demo: %d images, %d annotations -> %s",
-        len(coco["images"]),
-        len(coco["annotations"]),
-        demo_dir,
-    )
+
+    # Split: first 6 train, last 2 val
+    train_ann = {
+        "images": coco["images"][:6],
+        "annotations": [a for a in coco["annotations"] if a["image_id"] < 6],
+        "categories": coco["categories"],
+    }
+    val_ann = {
+        "images": coco["images"][6:],
+        "annotations": [a for a in coco["annotations"] if a["image_id"] >= 6],
+        "categories": coco["categories"],
+    }
+    train_file = data_dir / "train_annotations.json"
+    val_file = data_dir / "val_annotations.json"
+    train_file.write_text(json.dumps(train_ann))
+    val_file.write_text(json.dumps(val_ann))
+
+    log.info("Synthetic demo dataset created at %s (8 images, 1 class)", data_dir)
     return {
         "train_img_dir": str(img_dir),
-        "train_ann_file": str(ann_file),
-        "val_img_dir": None,
-        "val_ann_file": None,
+        "train_ann_file": str(train_file),
+        "val_img_dir": str(img_dir),
+        "val_ann_file": str(val_file),
     }
 
 
@@ -1290,9 +1316,12 @@ def main():
 
     if dataset_arg is None or dataset_arg == "":
         log.info("No dataset provided — generating synthetic demo data ...")
-        data_info = _generate_synthetic_dataset(workspace)
+        if task is None:
+            task = "detection"
+            log.info("Defaulting task to: detection")
+        data_info = generate_synthetic_dataset(workspace)
     else:
-        dataset_path = Path(args.dataset).resolve()
+        dataset_path = Path(dataset_arg).resolve()
         if not dataset_path.exists():
             log.error("Dataset path does not exist: %s", dataset_path)
             sys.exit(1)
