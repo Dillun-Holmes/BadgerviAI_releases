@@ -902,7 +902,7 @@ def auto_batch_size(gpu_mem_gb: float, img_size: int) -> int:
     except Exception:
         pass
 
-    for bs in [32, 24, 16, 12, 8, 4, 2, 1]:
+    for bs in [512, 256, 128, 64, 32, 24, 16, 12, 8, 4, 2, 1]:
         if bs <= max_batch:
             return bs
     return 1
@@ -1084,7 +1084,7 @@ def run_training(
     import torch
     from tqdm import tqdm
 
-    from badger_vision.core.api import Badger_vision, validate_detection
+    from badger_vision.core.api import Badger_vision, validate_classification, validate_detection
     from badger_vision.data import COCODataset, create_dataloader
     from badger_vision.training.smart_trainer import SmartTrainer
     from badger_vision.utils.env import get_optimal_env_config
@@ -1331,13 +1331,19 @@ def run_training(
         if is_best:
             log.info("  >> New best loss: %.4f — saved checkpoint_best.pt", best_loss)
 
-        # Validation mAP
+        # Validation metrics
         if val_loader is not None:
             num_classes = config.get("model", {}).get("num_classes", 80)
-            val_results = validate_detection(model, val_loader, device, num_classes=num_classes, img_size=img_size)
-            mAP_50 = val_results.get("mAP_50", 0.0)
-            mAP_50_95 = val_results.get("mAP_50_95", 0.0)
-            log.info("  Val mAP@50=%.4f  mAP@50:95=%.4f", mAP_50, mAP_50_95)
+            if task == "classification":
+                val_results = validate_classification(model, val_loader, device, num_classes=num_classes)
+                top1 = val_results.get("top1", 0.0)
+                top5 = val_results.get("top5", 0.0)
+                log.info("  Val Top-1=%.4f  Top-5=%.4f", top1, top5)
+            else:
+                val_results = validate_detection(model, val_loader, device, num_classes=num_classes, img_size=img_size)
+                mAP_50 = val_results.get("mAP_50", 0.0)
+                mAP_50_95 = val_results.get("mAP_50_95", 0.0)
+                log.info("  Val mAP@50=%.4f  mAP@50:95=%.4f", mAP_50, mAP_50_95)
 
         # Early stopping on loss (lower is better)
         if trainer.early_stopping.step(avg_epoch_loss):
