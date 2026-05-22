@@ -89,11 +89,15 @@ def _in_virtualenv() -> bool:
     return sys.prefix != sys.base_prefix
 
 
+WHEEL_URL = (
+    "https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.0.0/badger_vision-4.0.0-py3-none-any.whl"
+)
+
+
 def auto_setup(repo_root: Path) -> None:
     """Create a venv and install Badger_vision if not already set up."""
     if _in_virtualenv():
         log.info("Virtual-env active: %s", sys.prefix)
-        # Make sure tqdm + archive libs are present
         _ensure_packages(["tqdm", "py7zr", "rarfile"])
         return
 
@@ -119,8 +123,27 @@ def auto_setup(repo_root: Path) -> None:
         [pip, "install", "--upgrade", "pip", "setuptools", "wheel"],
         stdout=subprocess.DEVNULL,
     )
-    subprocess.check_call([pip, "install", "-e", str(repo_root)], stdout=subprocess.DEVNULL)
-    subprocess.check_call([pip, "install", "tqdm", "py7zr", "rarfile"], stdout=subprocess.DEVNULL)
+
+    # Try editable install first (works in the source repo).
+    # Fall back to the release wheel (works in BadgerviAI_releases).
+    setup_py = repo_root / "setup.py"
+    pyproject = repo_root / "pyproject.toml"
+    if setup_py.exists() or pyproject.exists():
+        subprocess.check_call(
+            [pip, "install", "-e", str(repo_root)],
+            stdout=subprocess.DEVNULL,
+        )
+    else:
+        log.info("No setup.py/pyproject.toml — installing release wheel ...")
+        subprocess.check_call(
+            [pip, "install", WHEEL_URL],
+            stdout=subprocess.DEVNULL,
+        )
+
+    subprocess.check_call(
+        [pip, "install", "tqdm", "py7zr", "rarfile"],
+        stdout=subprocess.DEVNULL,
+    )
 
     log.info("Setup complete — re-launching inside the new venv ...")
     os.execv(python, [python] + sys.argv)
@@ -1085,7 +1108,42 @@ def run_training(
 
 
 # ===================================================================
-# 9. Synthetic demo dataset
+# 9. Interactive dataset path prompt
+# ===================================================================
+
+_TASK_HINTS = {
+    "detection": (
+        "Object Detection",
+        "Badger Factory YOLO export, COCO folder, or a .zip/.7z archive",
+        "  e.g.  /data/badger_factory_export/\n        /data/my_dataset.7z\n        /data/coco_images/",
+    ),
+    "keypoints": (
+        "Keypoint Detection",
+        "Badger Factory YOLO keypoints export or archive",
+        "  e.g.  /data/keypoint_export/\n        /data/keypoints.7z",
+    ),
+    "classification": (
+        "Image Classification",
+        "Badger Factory classifier export with train/val class folders",
+        "  e.g.  /data/classifier_export/\n        /data/classification.zip",
+    ),
+}
+
+
+def _prompt_dataset_path(task: str) -> str | None:
+    """Interactively ask the user for a dataset path (or empty for demo)."""
+    label, desc, examples = _TASK_HINTS.get(task, ("Training", "dataset folder or archive", "  e.g.  /data/dataset/"))
+    print(f"\n  ── {label} Dataset ──\n")
+    print(f"  Expected: {desc}\n")
+    print(examples)
+    print()
+    print("  Press ENTER with no path to run a quick synthetic demo.\n")
+    path = input("  Dataset path: ").strip()
+    return path if path else None
+
+
+# ===================================================================
+# 10. Synthetic demo dataset
 # ===================================================================
 
 
@@ -1145,7 +1203,7 @@ def _generate_synthetic_dataset(workspace: Path) -> dict:
 
 
 # ===================================================================
-# 10. CLI entry point
+# 11. CLI entry point
 # ===================================================================
 
 
@@ -1226,7 +1284,11 @@ def main():
     workspace.mkdir(parents=True, exist_ok=True)
 
     # ── Dataset ──
-    if args.dataset is None:
+    dataset_arg = args.dataset
+    if dataset_arg is None:
+        dataset_arg = _prompt_dataset_path(task)
+
+    if dataset_arg is None or dataset_arg == "":
         log.info("No dataset provided — generating synthetic demo data ...")
         data_info = _generate_synthetic_dataset(workspace)
     else:
