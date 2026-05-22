@@ -48,14 +48,14 @@ else:
 REPO_DIR = Path("/kaggle/working/AI_vision_model")
 if not REPO_DIR.exists():
     subprocess.check_call(
-        ["git", "clone", "--depth=1",
-         "https://github.com/Dillun-Holmes/AI_vision_model.git",
-         str(REPO_DIR)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ["git", "clone", "--depth=1", "https://github.com/Dillun-Holmes/AI_vision_model.git", str(REPO_DIR)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 spec = importlib.util.spec_from_file_location(
-    "linux_train", str(REPO_DIR / "notebooks" / "linux_train.py"),
+    "linux_train",
+    str(REPO_DIR / "notebooks" / "linux_train.py"),
 )
 lt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lt)
@@ -64,16 +64,17 @@ from badger_vision import Badger_vision  # noqa: E402
 from badger_vision.models.badger_resnext import BadgerResNeXtModel  # noqa: E402
 from badger_vision.utils.profiler import model_summary  # noqa: E402
 
-# ── 3. Configuration ───────────────────────────────────────
-# Set DATASET_PATH to your Kaggle dataset input path or upload.
-# Leave empty to use synthetic demo data.
-DATASET_PATH = ""  # e.g. "/kaggle/input/my-dataset" or "/kaggle/input/my-data.7z"
-TASK = "detection"  # "detection" | "keypoints" | "classification"
-EPOCHS = 3
-BATCH_SIZE = 0  # 0 = auto
-IMG_SIZE = 640
-LR = 0.01
-MODEL_TYPE = "resnext"
+# ── 3. Configuration (loaded from train_config.yaml) ──────
+TCFG = lt.load_train_config()
+
+DATASET_PATH = TCFG.get("dataset_path", "")
+TASK = TCFG.get("task", "detection")
+EPOCHS = TCFG.get("epochs", 3)
+BATCH_SIZE = TCFG.get("batch_size", 0)
+IMG_SIZE = TCFG.get("img_size", 640)
+LR = TCFG.get("lr", 0.01)
+MODEL_TYPE = TCFG.get("model", "resnext")
+DEVICE = lt.resolve_device(TCFG.get("device", "auto"))
 
 # ── 4. Prepare dataset ─────────────────────────────────────
 ROOT = Path("/kaggle/working/badger_vision_demo")
@@ -88,6 +89,7 @@ if DATASET_PATH and Path(DATASET_PATH).exists():
 
     if dataset_path.is_file() and lt.is_archive(dataset_path):
         import shutil
+
         extract_dest = WORKSPACE / "dataset"
         if extract_dest.exists():
             shutil.rmtree(extract_dest)
@@ -102,7 +104,8 @@ if DATASET_PATH and Path(DATASET_PATH).exists():
     if fmt == "badger_yolo":
         classes_txt = dataset_root / "classes.txt"
         data_info = lt.prepare_badger_yolo(
-            dataset_root, WORKSPACE,
+            dataset_root,
+            WORKSPACE,
             classes_txt if classes_txt.exists() else None,
         )
     elif fmt == "badger_classifier":
@@ -128,20 +131,28 @@ if DATASET_PATH and Path(DATASET_PATH).exists():
         BATCH_SIZE = 2
 
     model_cfg, data_cfg = lt.write_configs(
-        WORKSPACE, data_info, num_classes,
-        epochs=EPOCHS, batch_size=BATCH_SIZE,
-        img_size=IMG_SIZE, lr=LR, model_type=MODEL_TYPE,
+        WORKSPACE,
+        data_info,
+        num_classes,
+        epochs=EPOCHS,
+        batch_size=BATCH_SIZE,
+        img_size=IMG_SIZE,
+        lr=LR,
+        model_type=MODEL_TYPE,
+        train_config=TCFG,
     )
     print(f"\nStarting training: {TASK} | {EPOCHS} epochs | batch {BATCH_SIZE}")
-    lt.run_training(model_cfg, data_cfg, data_info, DEVICE,
-                    epochs=EPOCHS, batch_size=BATCH_SIZE)
+    lt.run_training(
+        model_cfg, data_cfg, data_info, DEVICE, epochs=EPOCHS, batch_size=BATCH_SIZE, task=TASK, train_config=TCFG
+    )
 
 else:
     print("\nNo DATASET_PATH set — using synthetic demo data.")
     CONFIGS.mkdir(parents=True, exist_ok=True)
     IMGS.mkdir(parents=True, exist_ok=True)
 
-    (CONFIGS / "resnext_nano.yaml").write_text(textwrap.dedent("""\
+    (CONFIGS / "resnext_nano.yaml").write_text(
+        textwrap.dedent("""\
         model:
           name: "BadgerResNeXt-Nano"
           type: "resnext"
@@ -157,9 +168,11 @@ else:
           warmup_epochs: 1
           accumulation_steps: 1
           early_stopping_patience: 30
-    """))
+    """)
+    )
 
-    (CONFIGS / "convnext_nano.yaml").write_text(textwrap.dedent("""\
+    (CONFIGS / "convnext_nano.yaml").write_text(
+        textwrap.dedent("""\
         model:
           name: "Badger_vision-Nano"
           backbone: "convnext_tiny"
@@ -169,7 +182,8 @@ else:
           image_size: 640
         training:
           epochs: 3
-    """))
+    """)
+    )
 
     coco: dict = {"images": [], "annotations": [], "categories": [{"id": 1, "name": "object"}]}
     ann_id = 0
@@ -182,16 +196,17 @@ else:
             x, y = int(np.random.randint(0, 400)), int(np.random.randint(0, 400))
             w, h = int(np.random.randint(30, 200)), int(np.random.randint(30, 200))
             coco["annotations"].append(
-                {"id": ann_id, "image_id": i, "category_id": 1,
-                 "bbox": [x, y, w, h], "area": w * h, "iscrowd": 0}
+                {"id": ann_id, "image_id": i, "category_id": 1, "bbox": [x, y, w, h], "area": w * h, "iscrowd": 0}
             )
             ann_id += 1
 
     (DATA / "annotations.json").write_text(json.dumps(coco))
-    (CONFIGS / "data.yaml").write_text(textwrap.dedent(f"""\
+    (CONFIGS / "data.yaml").write_text(
+        textwrap.dedent(f"""\
         img_dir: "{IMGS}"
-        ann_file: "{DATA / 'annotations.json'}"
-    """))
+        ann_file: "{DATA / "annotations.json"}"
+    """)
+    )
     print("Synthetic data created.")
 
     for variant in ["resnext_pico", "resnext_nano", "resnext_small"]:

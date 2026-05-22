@@ -44,51 +44,53 @@ from badger_vision import Badger_vision  # noqa: E402
 from badger_vision.models.badger_resnext import BadgerResNeXtModel  # noqa: E402
 from badger_vision.utils.profiler import model_summary  # noqa: E402
 
-# ── 1. Detect device ──────────────────────────────────────
-print(f"Python  : {sys.version.split()[0]}")
-print(f"PyTorch : {torch.__version__}")
-
-if torch.cuda.is_available():
-    gpu_name = torch.cuda.get_device_name(0)
-    gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
-    print(f"CUDA    : {torch.version.cuda} — {gpu_name} ({gpu_mem:.1f} GB)")
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
-    DEVICE = torch.device("cuda:0")
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    print("Device  : Apple MPS")
-    DEVICE = torch.device("mps")
-else:
-    print("Device  : CPU  (no GPU detected — training will be slow)")
-    DEVICE = torch.device("cpu")
-
-# ── 2. Load linux_train helpers ────────────────────────────
+# ── 1. Load linux_train helpers ────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent if (SCRIPT_DIR.parent / "pyproject.toml").exists() else SCRIPT_DIR
 
 spec = importlib.util.spec_from_file_location(
-    "linux_train", str(SCRIPT_DIR / "linux_train.py"),
+    "linux_train",
+    str(SCRIPT_DIR / "linux_train.py"),
 )
 lt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lt)
 
+# ── 2. Load train_config.yaml ─────────────────────────────
+TCFG = lt.load_train_config()
+
+# ── 3. Detect device (from config) ────────────────────────
+print(f"Python  : {sys.version.split()[0]}")
+print(f"PyTorch : {torch.__version__}")
+DEVICE = lt.resolve_device(TCFG.get("device", "auto"))
+
+if DEVICE.type == "cuda":
+    gpu_name = torch.cuda.get_device_name(0)
+    gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    print(f"CUDA    : {torch.version.cuda} — {gpu_name} ({gpu_mem:.1f} GB)")
+elif DEVICE.type == "mps":
+    print("Device  : Apple MPS")
+else:
+    print("Device  : CPU  (no GPU detected — training will be slow)")
+
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Badger_vision — Local PC Quickstart",
+        description="Badger_vision — Local PC Quickstart (reads notebooks/train_config.yaml)",
     )
     p.add_argument(
-        "dataset", nargs="?", default="",
-        help="Path to dataset folder or archive (omit for synthetic demo)",
+        "dataset",
+        nargs="?",
+        default="",
+        help="Path to dataset folder or archive (omit to use config or synthetic demo)",
     )
-    p.add_argument("--task", choices=["detection", "keypoints", "classification"],
-                   default="detection")
-    p.add_argument("--epochs", type=int, default=3)
-    p.add_argument("--batch-size", type=int, default=0, help="0 = auto")
-    p.add_argument("--img-size", type=int, default=640)
-    p.add_argument("--lr", type=float, default=0.01)
-    p.add_argument("--model", choices=["resnext", "convnext"], default="resnext")
+    p.add_argument(
+        "--task", choices=["detection", "keypoints", "classification"], default=None, help="Override task from config"
+    )
+    p.add_argument("--epochs", type=int, default=None, help="Override epochs from config")
+    p.add_argument("--batch-size", type=int, default=None, help="0 = auto")
+    p.add_argument("--img-size", type=int, default=None)
+    p.add_argument("--lr", type=float, default=None)
+    p.add_argument("--model", choices=["resnext", "convnext"], default=None)
     return p.parse_args()
 
 
@@ -96,8 +98,16 @@ def _run_real_dataset(args: argparse.Namespace) -> None:
     """Train on a real dataset (archive or folder)."""
     import shutil
 
+    # Merge CLI args with config — CLI wins when explicitly provided
+    task = args.task or TCFG.get("task", "detection")
+    epochs = args.epochs if args.epochs is not None else TCFG.get("epochs", 3)
+    batch_size = args.batch_size if args.batch_size is not None else TCFG.get("batch_size", 0)
+    img_size = args.img_size if args.img_size is not None else TCFG.get("img_size", 640)
+    lr = args.lr if args.lr is not None else TCFG.get("lr", 0.01)
+    model_type = args.model or TCFG.get("model", "resnext")
+
     dataset_path = Path(args.dataset).resolve()
-    workspace = Path("badger_vision_workspace").resolve()
+    workspace = Path(TCFG.get("workspace", "badger_vision_workspace")).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
 
     if dataset_path.is_file() and lt.is_archive(dataset_path):
@@ -108,14 +118,15 @@ def _run_real_dataset(args: argparse.Namespace) -> None:
     else:
         dataset_root = dataset_path
 
-    dataset_root = lt.resolve_dataset_root(dataset_root, args.task)
+    dataset_root = lt.resolve_dataset_root(dataset_root, task)
     fmt = lt.detect_format(dataset_root)
     print(f"Detected format: {fmt}")
 
     if fmt == "badger_yolo":
         classes_txt = dataset_root / "classes.txt"
         data_info = lt.prepare_badger_yolo(
-            dataset_root, workspace,
+            dataset_root,
+            workspace,
             classes_txt if classes_txt.exists() else None,
         )
     elif fmt == "badger_classifier":
@@ -133,22 +144,28 @@ def _run_real_dataset(args: argparse.Namespace) -> None:
     num_train = lt.count_images(data_info["train_ann_file"])
     print(f"Classes: {num_classes}  |  Training images: {num_train}")
 
-    batch_size = args.batch_size
     if batch_size <= 0 and torch.cuda.is_available():
         vram = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        batch_size = lt.auto_batch_size(vram, args.img_size)
+        batch_size = lt.auto_batch_size(vram, img_size)
         print(f"Auto batch size: {batch_size}")
     elif batch_size <= 0:
         batch_size = 2
 
     model_cfg, data_cfg = lt.write_configs(
-        workspace, data_info, num_classes,
-        epochs=args.epochs, batch_size=batch_size,
-        img_size=args.img_size, lr=args.lr, model_type=args.model,
+        workspace,
+        data_info,
+        num_classes,
+        epochs=epochs,
+        batch_size=batch_size,
+        img_size=img_size,
+        lr=lr,
+        model_type=model_type,
+        train_config=TCFG,
     )
-    print(f"\nTraining: {args.task} | {args.epochs} epochs | batch {batch_size}")
-    lt.run_training(model_cfg, data_cfg, data_info, DEVICE,
-                    epochs=args.epochs, batch_size=batch_size)
+    print(f"\nTraining: {task} | {epochs} epochs | batch {batch_size}")
+    lt.run_training(
+        model_cfg, data_cfg, data_info, DEVICE, epochs=epochs, batch_size=batch_size, task=task, train_config=TCFG
+    )
 
 
 def _run_synthetic_demo() -> None:
@@ -160,7 +177,8 @@ def _run_synthetic_demo() -> None:
     CONFIGS.mkdir(parents=True, exist_ok=True)
     IMGS.mkdir(parents=True, exist_ok=True)
 
-    (CONFIGS / "resnext_nano.yaml").write_text(textwrap.dedent("""\
+    (CONFIGS / "resnext_nano.yaml").write_text(
+        textwrap.dedent("""\
         model:
           name: "BadgerResNeXt-Nano"
           type: "resnext"
@@ -176,9 +194,11 @@ def _run_synthetic_demo() -> None:
           warmup_epochs: 1
           accumulation_steps: 1
           early_stopping_patience: 30
-    """))
+    """)
+    )
 
-    (CONFIGS / "convnext_nano.yaml").write_text(textwrap.dedent("""\
+    (CONFIGS / "convnext_nano.yaml").write_text(
+        textwrap.dedent("""\
         model:
           name: "Badger_vision-Nano"
           backbone: "convnext_tiny"
@@ -188,10 +208,12 @@ def _run_synthetic_demo() -> None:
           image_size: 640
         training:
           epochs: 3
-    """))
+    """)
+    )
 
     coco: dict = {
-        "images": [], "annotations": [],
+        "images": [],
+        "annotations": [],
         "categories": [{"id": 1, "name": "object"}],
     }
     ann_id = 0
@@ -204,16 +226,17 @@ def _run_synthetic_demo() -> None:
             x, y = int(np.random.randint(0, 400)), int(np.random.randint(0, 400))
             w, h = int(np.random.randint(30, 200)), int(np.random.randint(30, 200))
             coco["annotations"].append(
-                {"id": ann_id, "image_id": i, "category_id": 1,
-                 "bbox": [x, y, w, h], "area": w * h, "iscrowd": 0},
+                {"id": ann_id, "image_id": i, "category_id": 1, "bbox": [x, y, w, h], "area": w * h, "iscrowd": 0},
             )
             ann_id += 1
 
     (DATA / "annotations.json").write_text(json.dumps(coco))
-    (CONFIGS / "data.yaml").write_text(textwrap.dedent(f"""\
+    (CONFIGS / "data.yaml").write_text(
+        textwrap.dedent(f"""\
         img_dir: "{IMGS.resolve()}"
-        ann_file: "{(DATA / 'annotations.json').resolve()}"
-    """))
+        ann_file: "{(DATA / "annotations.json").resolve()}"
+    """)
+    )
     print(f"Synthetic data created at: {ROOT.resolve()}")
 
     # Model profiling
@@ -259,6 +282,10 @@ def _run_synthetic_demo() -> None:
 
 if __name__ == "__main__":
     args = _parse_args()
+    # If no dataset given on CLI, check the config file
+    dataset_arg = args.dataset or TCFG.get("dataset_path", "")
+    if dataset_arg:
+        args.dataset = dataset_arg
     if args.dataset and Path(args.dataset).exists():
         _run_real_dataset(args)
     else:

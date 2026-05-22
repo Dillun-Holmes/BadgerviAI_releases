@@ -18,7 +18,7 @@
 ### Option A — Install directly with pip (recommended)
 
 ```bash
-pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.1.0/badger_vision-4.1.0-py3-none-any.whl
+pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.3.0/badger_vision-4.3.0-py3-none-any.whl
 ```
 
 ### Option B — Download and install locally
@@ -28,7 +28,7 @@ pip install https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/downlo
 3. Install with pip:
 
 ```bash
-pip install badger_vision-4.1.0-py3-none-any.whl
+pip install badger_vision-4.3.0-py3-none-any.whl
 ```
 
 ---
@@ -72,8 +72,23 @@ Ready-to-run notebooks are included in the [`notebooks/`](notebooks/) folder. Th
 | [training_demo.ipynb](notebooks/training_demo.ipynb) | Any | Quick training walkthrough |
 | [inference_demo.ipynb](notebooks/inference_demo.ipynb) | Any | Run inference & benchmark a trained model |
 | [dataset_analytics.ipynb](notebooks/dataset_analytics.ipynb) | Any | Analyze your dataset before training |
+| [train_config.yaml](notebooks/train_config.yaml) | Any | **Central config file** — set dataset, task, model, augmentation, epochs here |
 
 All notebooks support Phantom Factory archives (`.7z`, `.zip`, etc.), COCO, and YOLO datasets. Leave the dataset path empty to run a quick demo with synthetic data.
+
+### Configuration
+
+All training settings are now managed from a single config file: [`notebooks/train_config.yaml`](notebooks/train_config.yaml)
+
+Edit it to set:
+- **Dataset path** — point to your dataset folder or archive
+- **Task type** — `detection`, `keypoints`, or `classification`
+- **Model** — `resnext` or `convnext` with variant/size (e.g. `resnext_nano`, `resnext_large`)
+- **Epochs, batch size, learning rate, image size**
+- **Augmentation** — `true`/`false` master toggle + fine-grained controls
+- **Device** — `auto` (GPU if available), `cpu`, or specific GPU IDs
+
+Then just run any notebook — it reads the config automatically. CLI arguments still override config values when provided.
 
 ---
 

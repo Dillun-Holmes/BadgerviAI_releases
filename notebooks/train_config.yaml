@@ -1,0 +1,97 @@
+# ─────────────────────────────────────────────────────────────
+# Badger_vision — Training Configuration
+# ─────────────────────────────────────────────────────────────
+# Edit this file, then run any notebook or linux_train.py.
+# Settings here override the defaults in each script.
+# ─────────────────────────────────────────────────────────────
+
+# ── Dataset ────────────────────────────────────────────────
+# Path to dataset folder or archive (.zip .7z .tar.gz .rar).
+# Leave empty ("") to run a quick synthetic demo.
+dataset_path: ""
+
+# ── Task ───────────────────────────────────────────────────
+# One of: "detection", "keypoints", "classification"
+task: "detection"
+
+# ── Model ──────────────────────────────────────────────────
+# Architecture: "resnext" or "convnext"
+model: "resnext"
+
+# Model variant / size:
+#   resnext  → "resnext_pico", "resnext_nano", "resnext_small",
+#              "resnext_medium", "resnext_large"
+#   convnext → "nano", "small", "medium", "large", "xlarge"
+model_variant: "resnext_nano"
+
+# ResNeXt-specific model config (only used when model: "resnext")
+resnext_config:
+  neck_channels: 64     # Neck feature channels (48/64/96/128/192)
+  head_depth: 2         # Detection head depth
+  use_ghost: true       # Use Ghost modules for efficiency
+
+# ConvNeXt-specific model config (only used when model: "convnext")
+convnext_config:
+  channels: 64          # Internal channel width
+  transformer_depth: 2  # Number of transformer decoder layers
+  token_count: 100      # Learnable object query tokens
+
+# ── Training ───────────────────────────────────────────────
+epochs: 100
+batch_size: 0        # 0 = auto (picks best size for your GPU VRAM)
+img_size: 640
+lr: 0.01
+warmup_epochs: 3
+accumulation_steps: 1
+early_stopping_patience: 50
+
+# ── Device ─────────────────────────────────────────────────
+# "auto" = use GPU if available, else CPU
+# "cpu"  = force CPU
+# "0"    = use GPU 0
+# "0,1"  = multi-GPU DDP on GPUs 0 and 1
+device: "auto"
+
+# ── Augmentation ───────────────────────────────────────────
+# Master switch: set to false to disable ALL augmentation.
+augmentation: true
+
+# Fine-grained augmentation controls (only used when augmentation: true)
+augmentation_config:
+  hsv: true             # Random HSV colour jitter
+  hsv_h_gain: 0.015     # Hue gain
+  hsv_s_gain: 0.7       # Saturation gain
+  hsv_v_gain: 0.4       # Value gain
+  flip: true            # Random horizontal flip
+  flip_p: 0.5           # Flip probability
+  scale: true           # Random scaling
+  scale_min: 0.5        # Minimum scale factor
+  scale_max: 1.5        # Maximum scale factor
+  mosaic: true          # 4-image mosaic
+  mixup: true           # MixUp blending
+  mixup_alpha: 1.5      # MixUp beta distribution alpha
+  copy_paste: false     # Copy-paste augmentation
+  copy_paste_p: 0.5     # Copy-paste probability
+  color_jitter: true    # Torchvision ColorJitter (brightness, contrast, etc.)
+
+# ── Detection-specific ─────────────────────────────────────
+detection:
+  num_classes: 80       # Overridden automatically when dataset provides class count
+  nms_threshold: 0.45
+  conf_threshold: 0.25
+
+# ── Keypoints-specific ─────────────────────────────────────
+keypoints:
+  num_keypoints: 17     # Number of keypoints (17 = COCO body pose)
+  kpt_loss_weight: 1.0  # Weight for keypoint OKS loss
+  sigmas: null          # Per-keypoint sigmas (null = use COCO defaults)
+  visible_only: true    # Only compute loss on visible keypoints
+
+# ── Classification-specific ────────────────────────────────
+classification:
+  dropout: 0.0          # Dropout rate before final linear layer
+  label_smoothing: 0.0  # Label smoothing factor
+
+# ── Resume / Checkpoints ──────────────────────────────────
+resume: ""              # Path to checkpoint to resume from (empty = start fresh)
+workspace: "badger_vision_workspace"
