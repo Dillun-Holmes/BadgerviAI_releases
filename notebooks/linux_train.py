@@ -91,7 +91,7 @@ def _in_virtualenv() -> bool:
 
 
 WHEEL_URL = (
-    "https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.1.0/badger_vision-4.1.0-py3-none-any.whl"
+    "https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.3.3/badger_vision-4.3.3-py3-none-any.whl"
 )
 
 
