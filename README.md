@@ -77,7 +77,7 @@ All notebooks support Phantom Factory archives (`.7z`, `.zip`, etc.), COCO, and 
 
 ---
 
-## What is PhantomVision?
+## What is BadgerviAI?
 
 BadgerviAI is a production-grade object detection framework featuring:
 

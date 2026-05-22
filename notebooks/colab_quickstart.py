@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -----------------------------------------------------------
-# PhantomVision — Google Colab Quickstart (Python script)
+# Badger_vision — Google Colab Quickstart (Python script)
 #
-# Supports Phantom Factory datasets (YOLO / COCO / classifier),
+# Supports Badger Factory datasets (YOLO / COCO / classifier),
 # plain zip/7z/tar archives, or already-extracted folders.
 #
 # Usage in Colab:
@@ -62,9 +62,9 @@ spec = importlib.util.spec_from_file_location(
 lt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lt)
 
-from phantomvision import PhantomVision  # noqa: E402
-from phantomvision.models.phantom_resnext import PhantomResNeXtModel  # noqa: E402
-from phantomvision.utils.profiler import model_summary  # noqa: E402
+from badger_vision import Badger_vision  # noqa: E402
+from badger_vision.models.badger_resnext import BadgerResNeXtModel  # noqa: E402
+from badger_vision.utils.profiler import model_summary  # noqa: E402
 
 # ── 3. Configuration ───────────────────────────────────────
 # Set DATASET_PATH to your upload / Google Drive path, or leave
@@ -78,7 +78,7 @@ LR = 0.01
 MODEL_TYPE = "resnext"
 
 # ── 4. Prepare dataset ─────────────────────────────────────
-ROOT = Path("/content/phantomvision_demo")
+ROOT = Path("/content/badger_vision_demo")
 CONFIGS = ROOT / "configs"
 DATA = ROOT / "data"
 IMGS = DATA / "images"
@@ -101,14 +101,14 @@ if DATASET_PATH and Path(DATASET_PATH).exists():
     fmt = lt.detect_format(dataset_root)
     print(f"Detected format: {fmt}")
 
-    if fmt == "phantom_yolo":
+    if fmt == "badger_yolo":
         classes_txt = dataset_root / "classes.txt"
-        data_info = lt.prepare_phantom_yolo(
+        data_info = lt.prepare_badger_yolo(
             dataset_root, WORKSPACE,
             classes_txt if classes_txt.exists() else None,
         )
-    elif fmt == "phantom_classifier":
-        data_info = lt.prepare_phantom_classifier(dataset_root, WORKSPACE)
+    elif fmt == "badger_classifier":
+        data_info = lt.prepare_badger_classifier(dataset_root, WORKSPACE)
     elif fmt == "coco_archive":
         data_info = lt.prepare_coco_archive(dataset_root, WORKSPACE)
     elif fmt == "yolo_flat":
@@ -146,7 +146,7 @@ else:
 
     (CONFIGS / "resnext_nano.yaml").write_text(textwrap.dedent("""\
         model:
-          name: "PhantomResNeXt-Nano"
+          name: "BadgerResNeXt-Nano"
           type: "resnext"
           backbone: "resnext_nano"
           neck_channels: 64
@@ -164,7 +164,7 @@ else:
 
     (CONFIGS / "convnext_nano.yaml").write_text(textwrap.dedent("""\
         model:
-          name: "PhantomVision-Nano"
+          name: "Badger_vision-Nano"
           backbone: "convnext_tiny"
           channels: 64
           transformer_depth: 2
@@ -199,12 +199,12 @@ else:
 
     # Model profiling
     for variant in ["resnext_pico", "resnext_nano", "resnext_small"]:
-        m = PhantomResNeXtModel(variant=variant, num_classes=80)
+        m = BadgerResNeXtModel(variant=variant, num_classes=80)
         s = model_summary(m)
         print(f"{variant:>16s}  |  {s['params_M']}M params  |  {s['flops_G']} GFLOPs  |  {s['size_mb']} MB")
 
     # Training
-    model = PhantomVision(str(CONFIGS / "resnext_nano.yaml"))
+    model = Badger_vision(str(CONFIGS / "resnext_nano.yaml"))
     model.train(data=str(CONFIGS / "data.yaml"), task="detection")
 
     # Inference

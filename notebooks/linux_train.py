@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""PhantomVision — Production-Ready Linux Training Script
+"""Badger_vision — Production-Ready Linux Training Script
 
-Supports every dataset layout produced by Phantom Factory, plus plain
+Supports every dataset layout produced by Badger Factory, plus plain
 YOLO and COCO archives.  Point it at a folder or archive, pick a task,
 and training starts automatically.
 
 Supported dataset formats
 -------------------------
-* **Phantom Factory – Keypoint Detection**
+* **Badger Factory – Keypoint Detection**
     ``keypoint_detection/yolo/`` with ``images/{train,val}.7z`` and
     ``labels/{train,val}.7z`` containing flat image/label files.
-* **Phantom Factory – Object Detection**
+* **Badger Factory – Object Detection**
     Same YOLO layout as keypoints.
-* **Phantom Factory – Image Classification**
+* **Badger Factory – Image Classification**
     ``image_classification/classifier/evolving_ds_<name>/`` with
     ``{train,val}.7z`` each containing ``<class_name>/image.png`` folders.
 * **COCO export**
@@ -79,7 +79,7 @@ def _in_virtualenv() -> bool:
 
 
 def auto_setup(repo_root: Path) -> None:
-    """Create a venv and install PhantomVision if not already set up."""
+    """Create a venv and install Badger_vision if not already set up."""
     if _in_virtualenv():
         log.info("Virtual-env active: %s", sys.prefix)
         # Make sure tqdm + archive libs are present
@@ -101,7 +101,7 @@ def auto_setup(repo_root: Path) -> None:
     pip = str(venv_dir / "bin" / "pip")
     python = str(venv_dir / "bin" / "python")
 
-    log.info("Installing PhantomVision + training extras ...")
+    log.info("Installing Badger_vision + training extras ...")
     subprocess.check_call(
         [pip, "install", "--upgrade", "pip", "setuptools", "wheel"],
         stdout=subprocess.DEVNULL,
@@ -231,27 +231,27 @@ def detect_format(root: Path) -> str:
     """Auto-detect the dataset format under *root*.
 
     Returns one of:
-        'phantom_yolo'        – Phantom Factory YOLO layout (images/*.7z, labels/*.7z)
-        'phantom_classifier'  – Phantom Factory classification (evolving_ds_*/...)
+        'badger_yolo'        – Badger Factory YOLO layout (images/*.7z, labels/*.7z)
+        'badger_classifier'  – Badger Factory classification (evolving_ds_*/...)
         'coco_archive'        – COCO export with train.7z / val.7z containing coco_instances.json
         'yolo_flat'           – Standard YOLO (images/ + labels/ already extracted)
         'coco_flat'           – COCO JSON already on disk with images/
         'unknown'
     """
-    # Phantom Factory YOLO: images/ dir containing train.7z
+    # Badger Factory YOLO: images/ dir containing train.7z
     images_dir = root / "images"
     labels_dir = root / "labels"
     if images_dir.is_dir() and labels_dir.is_dir():
         has_archive = any(is_archive(f) for f in images_dir.iterdir() if f.is_file())
         if has_archive:
-            return "phantom_yolo"
+            return "badger_yolo"
         # Already extracted flat yolo
         return "yolo_flat"
 
-    # Phantom Factory classifier: evolving_ds_* sub-folder
+    # Badger Factory classifier: evolving_ds_* sub-folder
     for child in root.iterdir():
         if child.is_dir() and child.name.startswith("evolving_ds_"):
-            return "phantom_classifier"
+            return "badger_classifier"
 
     # COCO archive: train.7z at root level
     for f in root.iterdir():
@@ -268,7 +268,7 @@ def detect_format(root: Path) -> str:
     if train_sub.is_dir():
         return detect_format(train_sub)
 
-    # yolo/ subfolder (Phantom Factory top-level)
+    # yolo/ subfolder (Badger Factory top-level)
     yolo_sub = root / "yolo"
     if yolo_sub.is_dir():
         return detect_format(yolo_sub)
@@ -282,7 +282,7 @@ def detect_format(root: Path) -> str:
 
 
 # ------------------------------------------------------------------
-# 4a. Phantom Factory YOLO (keypoints / object detection)
+# 4a. Badger Factory YOLO (keypoints / object detection)
 # ------------------------------------------------------------------
 
 
@@ -300,8 +300,8 @@ def _extract_split_archives(parent: Path, split: str, workspace: Path) -> Path:
     sys.exit(1)
 
 
-def prepare_phantom_yolo(root: Path, workspace: Path, classes_txt: Path | None = None) -> dict:
-    """Handle Phantom Factory YOLO layout.
+def prepare_badger_yolo(root: Path, workspace: Path, classes_txt: Path | None = None) -> dict:
+    """Handle Badger Factory YOLO layout.
 
     Extracts images/{train,val}.7z and labels/{train,val}.7z, then
     converts YOLO labels to COCO JSON.
@@ -331,12 +331,12 @@ def prepare_phantom_yolo(root: Path, workspace: Path, classes_txt: Path | None =
 
 
 # ------------------------------------------------------------------
-# 4b. Phantom Factory classifier
+# 4b. Badger Factory classifier
 # ------------------------------------------------------------------
 
 
-def prepare_phantom_classifier(root: Path, workspace: Path) -> dict:
-    """Handle Phantom Factory classification layout.
+def prepare_badger_classifier(root: Path, workspace: Path) -> dict:
+    """Handle Badger Factory classification layout.
 
     Each split archive contains ``<class_name>/<image>`` folders.
     We create a COCO-style JSON mapping class folders to category IDs.
@@ -635,12 +635,12 @@ def _yolo_to_coco(img_dir: Path, label_dir: Path, output: Path,
 
 
 # ===================================================================
-# 5. Navigate Phantom Factory top-level to the right sub-folder
+# 5. Navigate Badger Factory top-level to the right sub-folder
 # ===================================================================
 
 
 def resolve_dataset_root(root: Path, task: str) -> Path:
-    """Walk into the right Phantom Factory sub-folder for the task."""
+    """Walk into the right Badger Factory sub-folder for the task."""
     task_dirs = {
         "detection": ["object_detection", "yolo"],
         "keypoints": ["keypoint_detection", "yolo"],
@@ -702,7 +702,7 @@ def write_configs(workspace: Path, data_info: dict, num_classes: int,
     if model_type == "resnext":
         model_yaml = textwrap.dedent(f"""\
             model:
-              name: "PhantomResNeXt-Train"
+              name: "BadgerResNeXt-Train"
               type: "resnext"
               backbone: "resnext_nano"
               neck_channels: 64
@@ -721,7 +721,7 @@ def write_configs(workspace: Path, data_info: dict, num_classes: int,
     else:
         model_yaml = textwrap.dedent(f"""\
             model:
-              name: "PhantomVision-Train"
+              name: "Badger_vision-Train"
               backbone: "convnext_tiny"
               channels: 64
               transformer_depth: 2
@@ -807,19 +807,19 @@ def run_training(model_cfg_path: Path, data_cfg_path: Path, data_info: dict,
     import torch
     from tqdm import tqdm
 
-    from phantomvision.core.api import PhantomVision
-    from phantomvision.data import COCODataset, create_dataloader
-    from phantomvision.training.smart_trainer import SmartTrainer
-    from phantomvision.utils.env import get_optimal_env_config
-    from phantomvision.utils.profiler import model_summary
-    from phantomvision.utils.yaml_utils import load_yaml
+    from badger_vision.core.api import Badger_vision
+    from badger_vision.data import COCODataset, create_dataloader
+    from badger_vision.training.smart_trainer import SmartTrainer
+    from badger_vision.utils.env import get_optimal_env_config
+    from badger_vision.utils.profiler import model_summary
+    from badger_vision.utils.yaml_utils import load_yaml
 
     config = load_yaml(str(model_cfg_path))
     data_config = load_yaml(str(data_cfg_path))
     img_size = config.get("model", {}).get("image_size", 640)
 
     # Model
-    pv = PhantomVision(str(model_cfg_path))
+    pv = Badger_vision(str(model_cfg_path))
     model = pv.model
     summary = model_summary(model, input_size=(1, 3, img_size, img_size))
 
@@ -881,9 +881,9 @@ def run_training(model_cfg_path: Path, data_cfg_path: Path, data_info: dict,
     num_train = len(train_dataset)
     num_val = len(val_loader.dataset) if val_loader else 0
     log.info("=" * 64)
-    log.info("  PHANTOMVISION TRAINING")
+    log.info("  BADGER_VISION TRAINING")
     log.info("=" * 64)
-    log.info("  Model      : %s", config.get("model", {}).get("name", "PhantomVision"))
+    log.info("  Model      : %s", config.get("model", {}).get("name", "Badger_vision"))
     log.info("  Params     : %sM  |  FLOPs: %s G  |  Size: %s MB",
              summary["params_M"], summary["flops_G"], summary["size_mb"])
     log.info("  Task       : detection")
@@ -1048,18 +1048,18 @@ def run_training(model_cfg_path: Path, data_cfg_path: Path, data_info: dict,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="PhantomVision — Production-Ready Linux Training",
+        description="Badger_vision — Production-Ready Linux Training",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Dataset formats (auto-detected):
-              Phantom Factory - Keypoint Detection   yolo/images/*.7z + labels/*.7z
-              Phantom Factory - Object Detection      (same layout)
-              Phantom Factory - Image Classification  classifier/evolving_ds_*/{train,val}.7z
+              Badger Factory - Keypoint Detection   yolo/images/*.7z + labels/*.7z
+              Badger Factory - Object Detection      (same layout)
+              Badger Factory - Image Classification  classifier/evolving_ds_*/{train,val}.7z
               COCO export                             coco/{train,val}.7z with coco_instances.json
               Plain YOLO / COCO                       already extracted on disk
 
             Examples:
-              %(prog)s /data/phantom_factory_export/ --task detection
+              %(prog)s /data/badger_factory_export/ --task detection
               %(prog)s /data/my_dataset.7z --task keypoints --epochs 200
               %(prog)s /data/classifier_export/ --task classification
               %(prog)s /data/coco_export/ --task detection --model convnext
@@ -1081,7 +1081,7 @@ def main():
     parser.add_argument("--lr", type=float, default=0.01, help="Learning rate (default: 0.01)")
     parser.add_argument("--model", type=str, default="resnext", choices=["resnext", "convnext"], help="Architecture")
     parser.add_argument("--resume", type=str, default=None, help="Checkpoint path to resume from")
-    parser.add_argument("--workspace", type=str, default="phantomvision_workspace", help="Working directory")
+    parser.add_argument("--workspace", type=str, default="badger_vision_workspace", help="Working directory")
     parser.add_argument("--no-setup", action="store_true", help="Skip auto-setup")
 
     args = parser.parse_args()
@@ -1139,13 +1139,13 @@ def main():
     fmt = detect_format(dataset_root)
     log.info("Detected format: %s", fmt)
 
-    if fmt == "phantom_yolo":
+    if fmt == "badger_yolo":
         classes_txt = dataset_root / "classes.txt"
         if not classes_txt.exists():
             classes_txt = None
-        data_info = prepare_phantom_yolo(dataset_root, workspace, classes_txt)
-    elif fmt == "phantom_classifier":
-        data_info = prepare_phantom_classifier(dataset_root, workspace)
+        data_info = prepare_badger_yolo(dataset_root, workspace, classes_txt)
+    elif fmt == "badger_classifier":
+        data_info = prepare_badger_classifier(dataset_root, workspace)
     elif fmt == "coco_archive":
         data_info = prepare_coco_archive(dataset_root, workspace)
     elif fmt == "yolo_flat":
@@ -1156,8 +1156,8 @@ def main():
         log.error(
             "Could not detect dataset format in %s\n"
             "  Expected one of:\n"
-            "    - Phantom Factory YOLO:   images/{train,val}.7z + labels/{train,val}.7z\n"
-            "    - Phantom Factory Class.: evolving_ds_*/{train,val}.7z\n"
+            "    - Badger Factory YOLO:   images/{train,val}.7z + labels/{train,val}.7z\n"
+            "    - Badger Factory Class.: evolving_ds_*/{train,val}.7z\n"
             "    - COCO archive:           {train,val}.7z with coco_instances.json\n"
             "    - Plain YOLO:             images/ + labels/ dirs\n"
             "    - Plain COCO:             annotations.json + images/",
