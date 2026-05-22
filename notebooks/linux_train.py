@@ -95,6 +95,22 @@ WHEEL_URL = (
 )
 
 
+def _pip_env(repo_root: Path) -> dict[str, str]:
+    """Return env dict with TMPDIR on the real filesystem.
+
+    Many Linux distros mount ``/tmp`` as a size-limited tmpfs (RAM disk).
+    PyTorch + NVIDIA wheels are 2 GB+ and easily overflow it, causing
+    ``[Errno 28] No space left on device`` even when the real disk has
+    plenty of room.  Redirecting TMPDIR to a directory next to the repo
+    avoids this.
+    """
+    env = os.environ.copy()
+    tmp_dir = repo_root / ".pip_tmp"
+    tmp_dir.mkdir(exist_ok=True)
+    env["TMPDIR"] = str(tmp_dir)
+    return env
+
+
 def auto_setup(repo_root: Path) -> None:
     """Create a venv and install Badger_vision if not already set up."""
     if _in_virtualenv():
@@ -136,9 +152,11 @@ def auto_setup(repo_root: Path) -> None:
     python = str(venv_python)
 
     log.info("Installing Badger_vision + training extras ...")
+    env = _pip_env(repo_root)
     subprocess.check_call(
         [pip, "install", "--upgrade", "pip", "setuptools", "wheel"],
         stdout=subprocess.DEVNULL,
+        env=env,
     )
 
     # Try editable install first (works in the source repo).
@@ -149,17 +167,20 @@ def auto_setup(repo_root: Path) -> None:
         subprocess.check_call(
             [pip, "install", "-e", str(repo_root)],
             stdout=subprocess.DEVNULL,
+            env=env,
         )
     else:
         log.info("No setup.py/pyproject.toml — installing release wheel ...")
         subprocess.check_call(
             [pip, "install", WHEEL_URL],
             stdout=subprocess.DEVNULL,
+            env=env,
         )
 
     subprocess.check_call(
         [pip, "install", "tqdm", "py7zr", "rarfile"],
         stdout=subprocess.DEVNULL,
+        env=env,
     )
 
     log.info("Setup complete — re-launching inside the new venv ...")
@@ -176,9 +197,14 @@ def _ensure_packages(packages: list[str]) -> None:
             missing.append(pkg)
     if missing:
         log.info("Installing missing packages: %s", ", ".join(missing))
+        env = os.environ.copy()
+        tmp_dir = Path(sys.prefix) / ".pip_tmp"
+        tmp_dir.mkdir(exist_ok=True)
+        env["TMPDIR"] = str(tmp_dir)
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install"] + missing,
             stdout=subprocess.DEVNULL,
+            env=env,
         )
 
 
