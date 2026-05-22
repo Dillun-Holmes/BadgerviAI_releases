@@ -59,7 +59,25 @@ predictions = model.predict("path/to/image.jpg")
 
 ---
 
-## What is BadgerviAI?
+## Training Notebooks
+
+Ready-to-run notebooks are included in the [`notebooks/`](notebooks/) folder. These are automatically synced from the [main repository](https://github.com/Dillun-Holmes/AI_vision_model).
+
+| Notebook | Platform | Description |
+|----------|----------|-------------|
+| [colab_quickstart.ipynb](notebooks/colab_quickstart.ipynb) | Google Colab | One-click training on free GPU — [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Dillun-Holmes/BadgerviAI_releases/blob/main/notebooks/colab_quickstart.ipynb) |
+| [kaggle_quickstart.ipynb](notebooks/kaggle_quickstart.ipynb) | Kaggle | Train on Kaggle's free T4 GPUs |
+| [local_quickstart.ipynb](notebooks/local_quickstart.ipynb) | Local PC | Windows / macOS / Linux — GPU or CPU |
+| [linux_train.ipynb](notebooks/linux_train.ipynb) | Linux Server | Production training with venv auto-setup |
+| [training_demo.ipynb](notebooks/training_demo.ipynb) | Any | Quick training walkthrough |
+| [inference_demo.ipynb](notebooks/inference_demo.ipynb) | Any | Run inference & benchmark a trained model |
+| [dataset_analytics.ipynb](notebooks/dataset_analytics.ipynb) | Any | Analyze your dataset before training |
+
+All notebooks support Phantom Factory archives (`.7z`, `.zip`, etc.), COCO, and YOLO datasets. Leave the dataset path empty to run a quick demo with synthetic data.
+
+---
+
+## What is PhantomVision?
 
 BadgerviAI is a production-grade object detection framework featuring:
 
