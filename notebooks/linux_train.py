@@ -92,7 +92,7 @@ def _in_virtualenv() -> bool:
 
 
 WHEEL_URL = (
-    "https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.3.4/badger_vision-4.3.4-py3-none-any.whl"
+    "https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.3.5/badger_vision-4.3.5-py3-none-any.whl"
 )
 
 # Version embedded in the wheel URL — used for auto-upgrade checks.
