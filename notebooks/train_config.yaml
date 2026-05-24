@@ -10,6 +10,16 @@
 # Leave empty ("") to run a quick synthetic demo.
 dataset_path: ""
 
+# ── Explicit split paths (optional) ───────────────────────
+# When both train_path and train_annotations are set, the script
+# skips auto-detection and uses these paths directly.
+# All paths are validated before training starts.
+train_path: ""              # Path to training images directory
+val_path: ""                # Path to validation images directory
+train_annotations: ""       # Path to training COCO JSON annotation file
+val_annotations: ""         # Path to validation COCO JSON annotation file
+keypoints_annotations: ""   # Path to keypoints COCO JSON (overrides train_annotations for keypoints task)
+
 # ── Task ───────────────────────────────────────────────────
 # One of: "detection", "keypoints", "classification"
 task: "detection"
@@ -99,6 +109,11 @@ keypoints:
 classification:
   dropout: 0.0          # Dropout rate before final linear layer
   label_smoothing: 0.0  # Label smoothing factor
+
+# ── Pretrained Weights ─────────────────────────────────────
+# false = train from scratch (random weights)
+# true  = use ImageNet-pretrained backbone (faster convergence, recommended)
+pretrained: false
 
 # ── Resume / Checkpoints ──────────────────────────────────
 resume: ""              # Path to checkpoint to resume from (empty = start fresh)

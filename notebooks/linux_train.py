@@ -48,6 +48,7 @@ import json
 import logging
 import multiprocessing
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -91,8 +92,69 @@ def _in_virtualenv() -> bool:
 
 
 WHEEL_URL = (
-    "https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.3.3/badger_vision-4.3.3-py3-none-any.whl"
+    "https://github.com/Dillun-Holmes/BadgerviAI_releases/releases/download/v4.3.4/badger_vision-4.3.4-py3-none-any.whl"
 )
+
+# Version embedded in the wheel URL — used for auto-upgrade checks.
+_WHEEL_VERSION: str = re.search(r"badger_vision-([\d.]+)-", WHEEL_URL).group(1)  # type: ignore[union-attr]
+
+
+def _needs_upgrade() -> bool:
+    """Return True if badger_vision is installed but outdated."""
+    try:
+        import badger_vision  # noqa: F401
+
+        installed = getattr(badger_vision, "__version__", "0.0.0")
+        if installed != _WHEEL_VERSION:
+            log.info(
+                "badger_vision %s installed, script expects %s",
+                installed,
+                _WHEEL_VERSION,
+            )
+            return True
+        return False
+    except ImportError:
+        return True
+
+
+def upgrade_library(force: bool = False) -> None:
+    """Upgrade (or install) badger_vision to the version in WHEEL_URL.
+
+    Uses ``--upgrade --no-deps --no-cache-dir`` so only the
+    badger_vision package is replaced — heavy deps like PyTorch are
+    left untouched, saving disk space and download time.
+
+    Failures are logged but do **not** abort the script — the existing
+    version (if any) is still usable.
+    """
+    if not force and not _needs_upgrade():
+        return
+
+    log.info("Upgrading badger_vision → %s ...", _WHEEL_VERSION)
+    env = os.environ.copy()
+    tmp_dir = Path(sys.prefix) / ".pip_tmp"
+    tmp_dir.mkdir(exist_ok=True)
+    env["TMPDIR"] = str(tmp_dir)
+    try:
+        subprocess.check_call(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "--no-deps",
+                "--no-cache-dir",
+                WHEEL_URL,
+            ],
+            env=env,
+        )
+        log.info("Upgrade complete — badger_vision %s", _WHEEL_VERSION)
+    except subprocess.CalledProcessError:
+        log.warning(
+            "Could not upgrade badger_vision (wheel unavailable or network error). "
+            "Continuing with the currently installed version."
+        )
 
 
 def _pip_env(repo_root: Path) -> dict[str, str]:
@@ -111,10 +173,60 @@ def _pip_env(repo_root: Path) -> dict[str, str]:
     return env
 
 
+def _venv_is_healthy(venv_dir: Path) -> bool:
+    """Return True only if the venv's Python starts and can import pip."""
+    venv_python = venv_dir / "bin" / "python"
+    if not venv_python.exists():
+        return False
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-c", "import pip; print('ok')"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result.returncode == 0 and "ok" in result.stdout
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _venv_python_matches(venv_dir: Path) -> bool:
+    """Return True if the venv was built with the same Python major.minor."""
+    venv_python = venv_dir / "bin" / "python"
+    if not venv_python.exists():
+        return False
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        venv_ver = result.stdout.strip()
+        sys_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+        if venv_ver != sys_ver:
+            log.warning("Venv Python %s != system Python %s", venv_ver, sys_ver)
+            return False
+        return True
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def auto_setup(repo_root: Path) -> None:
-    """Create a venv and install Badger_vision if not already set up."""
+    """Ensure Badger_vision and required packages are available.
+
+    Priority order:
+    1. If already inside a virtual-env, upgrade if needed and ensure extras.
+    2. If ``badger_vision`` is importable in the current interpreter,
+       use it as-is (avoids recreating a venv and re-downloading
+       PyTorch).  Auto-upgrades if the version is stale.
+    3. If a healthy ``.venv`` exists (Python works, correct version),
+       re-launch inside it.
+    4. Otherwise remove any broken/stale venv and create a fresh one.
+    """
     if _in_virtualenv():
         log.info("Virtual-env active: %s", sys.prefix)
+        upgrade_library()
         _ensure_packages(["tqdm", "py7zr", "rarfile"])
         return
 
@@ -123,6 +235,7 @@ def auto_setup(repo_root: Path) -> None:
         import badger_vision  # noqa: F401
 
         log.info("badger_vision already installed in: %s", sys.executable)
+        upgrade_library()
         _ensure_packages(["tqdm", "py7zr", "rarfile"])
         return
     except ImportError:
@@ -131,22 +244,16 @@ def auto_setup(repo_root: Path) -> None:
     venv_dir = repo_root / ".venv"
     venv_python = venv_dir / "bin" / "python"
 
-    if venv_dir.exists() and venv_python.exists():
-        log.info(
-            "A virtual environment already exists at %s\n"
-            "  Activate it and re-run:\n"
-            "    source %s/bin/activate && python %s",
-            venv_dir,
-            venv_dir,
-            " ".join(sys.argv),
-        )
-        sys.exit(1)
+    # Validate existing venv thoroughly before trusting it
+    if venv_dir.exists():
+        if not _venv_python_matches(venv_dir) or not _venv_is_healthy(venv_dir):
+            log.warning("Existing .venv is broken or stale — removing %s", venv_dir)
+            shutil.rmtree(venv_dir)
+        else:
+            log.info("Re-launching inside existing venv at %s ...", venv_dir)
+            os.execv(str(venv_python), [str(venv_python)] + sys.argv)
 
-    if venv_dir.exists() and not venv_python.exists():
-        log.warning("Incomplete .venv at %s — removing and recreating", venv_dir)
-        shutil.rmtree(venv_dir)
-
-    log.info("No virtual environment detected — creating at %s ...", venv_dir)
+    log.info("Creating virtual environment at %s ...", venv_dir)
     subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
     pip = str(venv_dir / "bin" / "pip")
     python = str(venv_python)
@@ -154,7 +261,7 @@ def auto_setup(repo_root: Path) -> None:
     log.info("Installing Badger_vision + training extras ...")
     env = _pip_env(repo_root)
     subprocess.check_call(
-        [pip, "install", "--upgrade", "pip", "setuptools", "wheel"],
+        [pip, "install", "--no-cache-dir", "--upgrade", "pip", "setuptools", "wheel"],
         stdout=subprocess.DEVNULL,
         env=env,
     )
@@ -165,23 +272,28 @@ def auto_setup(repo_root: Path) -> None:
     pyproject = repo_root / "pyproject.toml"
     if setup_py.exists() or pyproject.exists():
         subprocess.check_call(
-            [pip, "install", "-e", str(repo_root)],
+            [pip, "install", "--no-cache-dir", "-e", str(repo_root)],
             stdout=subprocess.DEVNULL,
             env=env,
         )
     else:
         log.info("No setup.py/pyproject.toml — installing release wheel ...")
         subprocess.check_call(
-            [pip, "install", WHEEL_URL],
+            [pip, "install", "--no-cache-dir", WHEEL_URL],
             stdout=subprocess.DEVNULL,
             env=env,
         )
 
     subprocess.check_call(
-        [pip, "install", "tqdm", "py7zr", "rarfile"],
+        [pip, "install", "--no-cache-dir", "tqdm", "py7zr", "rarfile"],
         stdout=subprocess.DEVNULL,
         env=env,
     )
+
+    # Clean up temp dir used for pip downloads
+    pip_tmp = repo_root / ".pip_tmp"
+    if pip_tmp.exists():
+        shutil.rmtree(pip_tmp, ignore_errors=True)
 
     log.info("Setup complete — re-launching inside the new venv ...")
     os.execv(python, [python] + sys.argv)
@@ -202,7 +314,7 @@ def _ensure_packages(packages: list[str]) -> None:
         tmp_dir.mkdir(exist_ok=True)
         env["TMPDIR"] = str(tmp_dir)
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install"] + missing,
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir"] + missing,
             stdout=subprocess.DEVNULL,
             env=env,
         )
@@ -246,6 +358,12 @@ def enforce_gpu():
 
 _DEFAULT_TRAIN_CONFIG: dict = {
     "dataset_path": "",
+    # Explicit split paths — when provided, skip auto-detection.
+    "train_path": "",
+    "val_path": "",
+    "train_annotations": "",
+    "val_annotations": "",
+    "keypoints_annotations": "",
     "task": "detection",
     "model": "resnext",
     "model_variant": "resnext_nano",
@@ -293,9 +411,107 @@ _DEFAULT_TRAIN_CONFIG: dict = {
         "visible_only": True,
     },
     "classification": {"dropout": 0.0, "label_smoothing": 0.0},
+    "pretrained": False,
     "resume": "",
     "workspace": "badger_vision_workspace",
 }
+
+
+# ===================================================================
+# 2c. Dataset path validation
+# ===================================================================
+
+
+def _check_path(label: str, path: str | Path, must_be_dir: bool = False, must_be_file: bool = False) -> Path:
+    """Validate a single path exists and optionally check type."""
+    p = Path(path).resolve()
+    if not p.exists():
+        log.error("%s does not exist: %s", label, p)
+        sys.exit(1)
+    if must_be_dir and not p.is_dir():
+        log.error("%s is not a directory: %s", label, p)
+        sys.exit(1)
+    if must_be_file and not p.is_file():
+        log.error("%s is not a file: %s", label, p)
+        sys.exit(1)
+    return p
+
+
+def _check_images_in_dir(label: str, path: Path) -> int:
+    """Verify a directory contains at least one image file."""
+    count = sum(1 for f in path.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS)
+    if count == 0:
+        log.error("%s contains no image files (%s): %s", label, ", ".join(IMAGE_EXTS), path)
+        sys.exit(1)
+    return count
+
+
+def _check_coco_json(label: str, path: Path) -> dict:
+    """Load and validate a COCO JSON annotation file."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except json.JSONDecodeError as exc:
+        log.error("%s is not valid JSON: %s — %s", label, path, exc)
+        sys.exit(1)
+
+    for key in ("images", "annotations", "categories"):
+        if key not in data:
+            log.error("%s missing required key '%s': %s", label, key, path)
+            sys.exit(1)
+
+    if not data["images"]:
+        log.error("%s has no images: %s", label, path)
+        sys.exit(1)
+    if not data["categories"]:
+        log.error("%s has no categories: %s", label, path)
+        sys.exit(1)
+
+    return data
+
+
+def validate_dataset_paths(data_info: dict, task: str) -> None:
+    """Validate all paths in *data_info* before training starts.
+
+    Checks:
+    - Train image dir exists and contains images.
+    - Train annotation file is valid COCO JSON.
+    - Val paths (if provided) are also valid.
+    - For keypoints, the annotation JSON contains ``keypoints`` fields.
+    """
+    # --- Train split (required) ---
+    train_img = data_info.get("train_img_dir")
+    train_ann = data_info.get("train_ann_file")
+    if not train_img or not train_ann:
+        log.error("Dataset preparation returned no training paths")
+        sys.exit(1)
+
+    train_img_path = _check_path("Train image dir", train_img, must_be_dir=True)
+    train_ann_path = _check_path("Train annotations", train_ann, must_be_file=True)
+    n_imgs = _check_images_in_dir("Train image dir", train_img_path)
+    coco_data = _check_coco_json("Train annotations", train_ann_path)
+    log.info("  Train Imgs : %d  (on disk: %d)", len(coco_data["images"]), n_imgs)
+
+    # --- Val split (optional) ---
+    val_img = data_info.get("val_img_dir")
+    val_ann = data_info.get("val_ann_file")
+    if val_img and val_ann:
+        val_img_path = _check_path("Val image dir", val_img, must_be_dir=True)
+        val_ann_path = _check_path("Val annotations", val_ann, must_be_file=True)
+        n_val = _check_images_in_dir("Val image dir", val_img_path)
+        val_coco = _check_coco_json("Val annotations", val_ann_path)
+        log.info("  Val Imgs   : %d  (on disk: %d)", len(val_coco["images"]), n_val)
+    else:
+        log.info("  Val Imgs   : 0")
+
+    # --- Keypoints check ---
+    if task == "keypoints":
+        sample_ann = coco_data["annotations"][0] if coco_data["annotations"] else {}
+        if "keypoints" not in sample_ann:
+            log.warning(
+                "Task is 'keypoints' but annotations do not contain 'keypoints' field. "
+                "Make sure your COCO JSON includes keypoint data."
+            )
 
 
 def load_train_config(config_path: Path | str | None = None) -> dict:
@@ -462,8 +678,13 @@ def extract_if_archive(path: Path, dest: Path) -> Path:
 # ===================================================================
 
 
-def detect_format(root: Path) -> str:
+def detect_format(root: Path, task: str = "detection") -> str:
     """Auto-detect the dataset format under *root*.
+
+    When *task* is ``"classification"`` and the root contains split
+    archives (``train.7z``, ``val.7z``) **without** a COCO JSON at the
+    top level, the archives are assumed to hold class-folder images
+    (``badger_classifier``) rather than COCO instances.
 
     Returns one of:
         'badger_yolo'        – Badger Factory YOLO layout (images/*.7z, labels/*.7z)
@@ -471,6 +692,7 @@ def detect_format(root: Path) -> str:
         'coco_archive'        – COCO export with train.7z / val.7z containing coco_instances.json
         'yolo_flat'           – Standard YOLO (images/ + labels/ already extracted)
         'coco_flat'           – COCO JSON already on disk with images/
+        'classifier_folder'   – Plain class-folder layout ({train,val}/<class>/*.jpg)
         'unknown'
     """
     # Badger Factory YOLO: images/ dir containing train.7z
@@ -480,7 +702,6 @@ def detect_format(root: Path) -> str:
         has_archive = any(is_archive(f) for f in images_dir.iterdir() if f.is_file())
         if has_archive:
             return "badger_yolo"
-        # Already extracted flat yolo
         return "yolo_flat"
 
     # Badger Factory classifier: evolving_ds_* sub-folder
@@ -488,10 +709,29 @@ def detect_format(root: Path) -> str:
         if child.is_dir() and child.name.startswith("evolving_ds_"):
             return "badger_classifier"
 
-    # COCO archive: train.7z at root level
-    for f in root.iterdir():
-        if f.is_file() and f.stem.lower() in ("train", "val", "valid") and is_archive(f):
-            return "coco_archive"
+    # Classification: check for class-folder layout (train/<class>/*.jpg)
+    if task == "classification":
+        train_sub = root / "train"
+        if train_sub.is_dir():
+            class_dirs = [d for d in train_sub.iterdir() if d.is_dir() and not d.name.startswith(".")]
+            if class_dirs:
+                return "classifier_folder"
+
+    # Archives at root level: train.7z / val.7z
+    has_split_archive = any(
+        f.is_file() and f.stem.lower() in ("train", "val", "valid") and is_archive(f) for f in root.iterdir()
+    )
+    if has_split_archive:
+        # When the task is classification, treat split archives as
+        # classifier data (class-folder archives) unless a COCO JSON
+        # is already present at the root.
+        if task == "classification":
+            has_coco_json = any(
+                (root / name).exists() for name in ("coco_instances.json", "annotations.json", "_annotations.coco.json")
+            )
+            if not has_coco_json:
+                return "badger_classifier"
+        return "coco_archive"
 
     # COCO flat: coco_instances.json / annotations.json present
     for name in ("coco_instances.json", "annotations.json", "_annotations.coco.json"):
@@ -501,17 +741,17 @@ def detect_format(root: Path) -> str:
     # Check for train/ sub-folder
     train_sub = root / "train"
     if train_sub.is_dir():
-        return detect_format(train_sub)
+        return detect_format(train_sub, task)
 
     # yolo/ subfolder (Badger Factory top-level)
     yolo_sub = root / "yolo"
     if yolo_sub.is_dir():
-        return detect_format(yolo_sub)
+        return detect_format(yolo_sub, task)
 
     # coco/ subfolder
     coco_sub = root / "coco"
     if coco_sub.is_dir():
-        return detect_format(coco_sub)
+        return detect_format(coco_sub, task)
 
     return "unknown"
 
@@ -648,7 +888,10 @@ def _classify_to_coco(split_root: Path, output: Path) -> Path:
             unique_name = f"{class_dir.name}_{img_file.name}"
             link = flat_img_dir / unique_name
             if not link.exists():
-                shutil.copy2(img_file, link)
+                try:
+                    os.symlink(img_file.resolve(), link)
+                except OSError:
+                    shutil.copy2(img_file, link)
 
             images_list.append({"id": img_id, "file_name": unique_name, "width": w, "height": h})
             annotations.append(
@@ -668,6 +911,43 @@ def _classify_to_coco(split_root: Path, output: Path) -> Path:
     output.write_text(json.dumps(coco_json))
     log.info("Classification COCO JSON: %s  (%d images, %d classes)", output, len(images_list), len(categories))
     return flat_img_dir
+
+
+# ------------------------------------------------------------------
+# 4b-2. Plain class-folder layout (train/<class>/*.jpg)
+# ------------------------------------------------------------------
+
+
+def prepare_classifier_folder(root: Path, workspace: Path) -> dict:
+    """Handle a plain class-folder dataset (no archives).
+
+    Expects ``root/{train,val}/<class_name>/<image>`` layout.
+    """
+    splits: dict = {}
+    for split_name in ("train", "val"):
+        split_root = root / split_name
+        if not split_root.is_dir():
+            if split_name == "train":
+                # Fallback: root itself might be the split
+                split_root = root
+            else:
+                continue
+
+        class_dirs = [d for d in split_root.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        if not class_dirs:
+            if split_name == "train":
+                log.error("No class sub-folders found in %s", split_root)
+                sys.exit(1)
+            continue
+
+        ann_out = workspace / f"{split_name}_annotations.json"
+        img_dir = _classify_to_coco(split_root, ann_out)
+        splits[f"{split_name}_img_dir"] = str(img_dir)
+        splits[f"{split_name}_ann_file"] = str(ann_out)
+
+    splits.setdefault("val_img_dir", None)
+    splits.setdefault("val_ann_file", None)
+    return splits
 
 
 # ------------------------------------------------------------------
@@ -920,10 +1200,15 @@ def auto_batch_size(gpu_mem_gb: float, img_size: int) -> int:
     mem_per_img = (img_size / 640) ** 2 * 0.06
     max_batch = max(1, int(gpu_mem_gb * 0.7 / mem_per_img))
 
-    # Also cap based on system RAM — training needs RAM for workers, data, etc.
+    # Cap based on system RAM.  Each DataLoader worker keeps its own
+    # copy of a batch in CPU memory, plus the main process needs room
+    # for gradients, the model, etc.  Use a per-image RAM estimate
+    # that is ~5x the GPU estimate to account for decoded PIL images,
+    # numpy arrays, and Python overhead.
     try:
         sys_ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024**3)
-        ram_batch_cap = max(1, int(sys_ram_gb * 0.4 / mem_per_img))
+        ram_per_img = (img_size / 640) ** 2 * 0.30
+        ram_batch_cap = max(1, int(sys_ram_gb * 0.3 / ram_per_img))
         max_batch = min(max_batch, ram_batch_cap)
     except Exception:
         pass
@@ -967,6 +1252,7 @@ def write_configs(
         neck_ch = rx.get("neck_channels", 64)
         head_d = rx.get("head_depth", 2)
         ghost = str(rx.get("use_ghost", True)).lower()
+        use_pretrained = str(train_config.get("pretrained", False)).lower()
         model_yaml = textwrap.dedent(f"""\
             model:
               name: "BadgerResNeXt-Train"
@@ -975,6 +1261,7 @@ def write_configs(
               neck_channels: {neck_ch}
               head_depth: {head_d}
               use_ghost: {ghost}
+              pretrained: {use_pretrained}
               num_classes: {num_classes}
               image_size: {img_size}
             training:
@@ -1000,6 +1287,7 @@ def write_configs(
         channels = cx.get("channels", 64)
         t_depth = cx.get("transformer_depth", 2)
         tokens = cx.get("token_count", 100)
+        use_pretrained = str(train_config.get("pretrained", False)).lower()
         model_yaml = textwrap.dedent(f"""\
             model:
               name: "Badger_vision-Train"
@@ -1007,6 +1295,7 @@ def write_configs(
               channels: {channels}
               transformer_depth: {t_depth}
               token_count: {tokens}
+              pretrained: {use_pretrained}
               num_classes: {num_classes}
               image_size: {img_size}
             training:
@@ -1175,6 +1464,8 @@ def run_training(
             num_workers=num_workers,
             pin_memory=use_pin_memory,
         )
+    else:
+        log.warning("No validation split found — training metrics only (no val mAP / accuracy)")
 
     from badger_vision.core.api import detection_loss_fn
 
@@ -1197,6 +1488,16 @@ def run_training(
 
     run_dir = Path("runs") / f"train_{time.strftime('%Y%m%d_%H%M%S')}"
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # TensorBoard logging
+    tb_writer = None
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+
+        tb_writer = SummaryWriter(log_dir=str(run_dir / "tensorboard"))
+        log.info("TensorBoard logging enabled: %s", run_dir / "tensorboard")
+    except ImportError:
+        log.info("TensorBoard not installed — run `pip install tensorboard` to enable logging")
 
     best_loss = float("inf")
 
@@ -1357,19 +1658,33 @@ def run_training(
         if is_best:
             log.info("  >> New best loss: %.4f — saved checkpoint_best.pt", best_loss)
 
+        # TensorBoard epoch scalars
+        if tb_writer is not None:
+            tb_writer.add_scalar("train/loss", avg_epoch_loss, epoch)
+            tb_writer.add_scalar("train/lr", lr_now, epoch)
+            if gpu_mem_now > 0:
+                tb_writer.add_scalar("train/gpu_mem_GB", gpu_mem_now, epoch)
+
         # Validation metrics
         if val_loader is not None:
             num_classes = config.get("model", {}).get("num_classes", 80)
             if task == "classification":
                 val_results = validate_classification(model, val_loader, device, num_classes=num_classes)
                 top1 = val_results.get("top1", 0.0)
-                top5 = val_results.get("top5", 0.0)
-                log.info("  Val Top-1=%.4f  Top-5=%.4f", top1, top5)
+                k = min(5, num_classes)
+                topk = val_results.get(f"top{k}", 0.0)
+                log.info("  Val Top-1=%.4f  Top-%d=%.4f", top1, k, topk)
+                if tb_writer is not None:
+                    tb_writer.add_scalar("val/top1", top1, epoch)
+                    tb_writer.add_scalar(f"val/top{k}", topk, epoch)
             else:
                 val_results = validate_detection(model, val_loader, device, num_classes=num_classes, img_size=img_size)
                 mAP_50 = val_results.get("mAP_50", 0.0)
                 mAP_50_95 = val_results.get("mAP_50_95", 0.0)
                 log.info("  Val mAP@50=%.4f  mAP@50:95=%.4f", mAP_50, mAP_50_95)
+                if tb_writer is not None:
+                    tb_writer.add_scalar("val/mAP_50", mAP_50, epoch)
+                    tb_writer.add_scalar("val/mAP_50_95", mAP_50_95, epoch)
 
         # Early stopping on loss (lower is better)
         if trainer.early_stopping.step(avg_epoch_loss):
@@ -1377,12 +1692,16 @@ def run_training(
             break
 
     total_time = time.time() - training_start
+    if tb_writer is not None:
+        tb_writer.close()
     log.info("=" * 64)
     log.info("  TRAINING COMPLETE")
     log.info("=" * 64)
     log.info("  Total Time : %s", _format_eta(total_time))
     log.info("  Best Loss  : %.4f", best_loss)
     log.info("  Checkpoints: %s", run_dir)
+    if tb_writer is not None:
+        log.info("  TensorBoard: tensorboard --logdir %s", run_dir / "tensorboard")
     log.info("=" * 64)
 
 
@@ -1457,34 +1776,235 @@ def generate_synthetic_dataset(workspace: Path) -> dict:
 
 
 # ===================================================================
-# 10. CLI entry point
+# 10. Standalone predict / val / export
 # ===================================================================
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Badger_vision — Production-Ready Linux Training",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent("""\
-            All settings are loaded from notebooks/train_config.yaml by
-            default.  CLI arguments override the config file.
+def _load_checkpoint(weights_path: str, model_cfg_path: str, device) -> tuple:
+    """Load a trained model from a checkpoint file.
 
-            Dataset formats (auto-detected):
-              Badger Factory - Keypoint Detection   yolo/images/*.7z + labels/*.7z
-              Badger Factory - Object Detection      (same layout)
-              Badger Factory - Image Classification  classifier/evolving_ds_*/{train,val}.7z
-              COCO export                             coco/{train,val}.7z with coco_instances.json
-              Plain YOLO / COCO                       already extracted on disk
+    Returns (model, config) tuple.
+    """
+    import torch
 
-            Examples:
-              %(prog)s                                          # uses train_config.yaml
-              %(prog)s /data/badger_factory_export/ --task detection
-              %(prog)s /data/my_dataset.7z --task keypoints --epochs 200
-              %(prog)s /data/classifier_export/ --task classification
-              %(prog)s /data/coco_export/ --task detection --model convnext
-              %(prog)s /data/dataset.zip --task detection --resume runs/train_*/checkpoint_last.pt
-        """),
+    from badger_vision.core.api import Badger_vision
+
+    ckpt = torch.load(weights_path, map_location=device)
+
+    if model_cfg_path:
+        pv = Badger_vision(model_cfg_path)
+        model = pv.model.to(device)
+    else:
+        config = ckpt.get("training_args", {})
+        model_config = config.get("model", {})
+        if not model_config:
+            log.error("Checkpoint has no model config and --config was not provided")
+            sys.exit(1)
+        import tempfile
+
+        import yaml
+
+        fd, tmp_cfg = tempfile.mkstemp(suffix=".yaml")
+        with open(fd, "w") as f:
+            yaml.dump(config, f)
+        pv = Badger_vision(tmp_cfg)
+        model = pv.model.to(device)
+
+    if "model_state_dict" in ckpt:
+        model.load_state_dict(ckpt["model_state_dict"])
+    else:
+        model.load_state_dict(ckpt)
+
+    return model, pv.config
+
+
+def run_predict(weights: str, source: str, config_path: str | None, device, conf: float = 0.25) -> None:
+    """Run inference on images / directory and save results."""
+    import torch
+    from PIL import Image
+    from torchvision import transforms
+
+    model, cfg = _load_checkpoint(weights, config_path, device)
+    model.eval()
+    img_size = cfg.get("model", {}).get("image_size", 640)
+
+    source_path = Path(source)
+    if source_path.is_file():
+        image_paths = [source_path]
+    elif source_path.is_dir():
+        image_paths = sorted(p for p in source_path.iterdir() if p.suffix.lower() in IMAGE_EXTS)
+    else:
+        log.error("Source not found: %s", source)
+        sys.exit(1)
+
+    if not image_paths:
+        log.error("No images found in: %s", source)
+        sys.exit(1)
+
+    transform = transforms.Compose(
+        [
+            transforms.Resize((img_size, img_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
     )
+
+    out_dir = Path("runs") / f"predict_{time.strftime('%Y%m%d_%H%M%S')}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    log.info("Running inference on %d image(s)", len(image_paths))
+    results = []
+    with torch.no_grad():
+        for img_path in image_paths:
+            img = Image.open(img_path).convert("RGB")
+            tensor = transform(img).unsqueeze(0).to(device)
+            preds = model(tensor)
+            result = {
+                "image": str(img_path),
+                "predictions": {k: v.cpu().tolist() if hasattr(v, "tolist") else v for k, v in preds.items()},
+            }
+            results.append(result)
+            log.info("  %s — %d predictions", img_path.name, sum(1 for v in preds.values() if hasattr(v, "shape")))
+
+    results_path = out_dir / "predictions.json"
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+    log.info("Results saved to %s", results_path)
+
+
+def run_val(weights: str, data_dir: str, config_path: str | None, device, task: str = "detection") -> None:
+    """Run standalone validation on a dataset."""
+    from badger_vision.core.api import validate_classification, validate_detection
+    from badger_vision.data import COCODataset, create_dataloader
+
+    model, cfg = _load_checkpoint(weights, config_path, device)
+    model.eval()
+    img_size = cfg.get("model", {}).get("image_size", 640)
+    num_classes = cfg.get("model", {}).get("num_classes", 80)
+
+    data_path = Path(data_dir)
+    img_dir = None
+    ann_file = None
+
+    if data_path.is_file() and data_path.suffix == ".json":
+        ann_file = str(data_path)
+        img_dir = str(data_path.parent / "images")
+    elif data_path.is_dir():
+        for candidate in ["annotations.json", "instances.json", "val.json"]:
+            if (data_path / candidate).exists():
+                ann_file = str(data_path / candidate)
+                break
+        img_dir = str(data_path / "images") if (data_path / "images").exists() else str(data_path)
+        if ann_file is None:
+            json_files = list(data_path.glob("*.json"))
+            if json_files:
+                ann_file = str(json_files[0])
+
+    if not ann_file or not img_dir:
+        log.error("Could not find annotation file and image dir in: %s", data_dir)
+        sys.exit(1)
+
+    log.info("Val images: %s", img_dir)
+    log.info("Val annotations: %s", ann_file)
+
+    dataset = COCODataset(img_dir=img_dir, ann_file=ann_file, img_size=img_size, augment=False)
+    loader = create_dataloader(dataset, batch_size=4, shuffle=False, num_workers=0, pin_memory=False)
+
+    log.info("Evaluating %d images...", len(dataset))
+    if task == "classification":
+        results = validate_classification(model, loader, device, num_classes=num_classes)
+        top1 = results.get("top1", 0.0)
+        k = min(5, num_classes)
+        topk = results.get(f"top{k}", 0.0)
+        log.info("Val Top-1=%.4f  Top-%d=%.4f", top1, k, topk)
+    else:
+        results = validate_detection(model, loader, device, num_classes=num_classes, img_size=img_size)
+        mAP_50 = results.get("mAP_50", 0.0)
+        mAP_50_95 = results.get("mAP_50_95", 0.0)
+        log.info("Val mAP@50=%.4f  mAP@50:95=%.4f", mAP_50, mAP_50_95)
+
+    log.info("Full results: %s", results)
+
+
+def run_export(weights: str, config_path: str | None, device, fmt: str = "onnx", output: str | None = None) -> None:
+    """Export a trained model to deployment formats."""
+    from badger_vision.export.exporter import ModelExporter
+
+    model, cfg = _load_checkpoint(weights, config_path, device)
+    model.eval()
+    img_size = cfg.get("model", {}).get("image_size", 640)
+
+    out_dir = Path("runs") / f"export_{time.strftime('%Y%m%d_%H%M%S')}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    exporter = ModelExporter(model, image_size=img_size)
+
+    fmt_lower = fmt.lower()
+    out_base = output or str(out_dir / "model")
+
+    if fmt_lower == "onnx":
+        path = exporter.export_onnx(f"{out_base}.onnx")
+        log.info("Exported ONNX: %s", path)
+    elif fmt_lower == "torchscript":
+        path = exporter.export_torchscript(f"{out_base}.pt")
+        log.info("Exported TorchScript: %s", path)
+    elif fmt_lower == "tensorrt":
+        onnx_path = f"{out_base}.onnx"
+        exporter.export_onnx(onnx_path)
+        path = exporter.export_tensorrt(onnx_path, f"{out_base}.engine")
+        log.info("Exported TensorRT: %s", path)
+    elif fmt_lower == "openvino":
+        onnx_path = f"{out_base}.onnx"
+        exporter.export_onnx(onnx_path)
+        path = exporter.export_openvino(onnx_path, f"{out_base}_openvino")
+        log.info("Exported OpenVINO: %s", path)
+    else:
+        log.error("Unsupported format: %s (choices: onnx, torchscript, tensorrt, openvino)", fmt)
+        sys.exit(1)
+
+
+# ===================================================================
+# 11. CLI entry point
+# ===================================================================
+
+
+def _build_train_parser(subparsers=None):
+    """Build the train argument parser (standalone or as subcommand)."""
+    if subparsers is not None:
+        parser = subparsers.add_parser(
+            "train",
+            help="Train a model (default command)",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+    else:
+        parser = argparse.ArgumentParser(
+            description="Badger_vision — Production-Ready Linux Training",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=textwrap.dedent("""\
+                All settings are loaded from notebooks/train_config.yaml by
+                default.  CLI arguments override the config file.
+
+                Modes:
+                  %(prog)s train [dataset] [--task ...] [--pretrained]
+                  %(prog)s predict --weights best.pt --source image.jpg
+                  %(prog)s val --weights best.pt --data /path/to/val
+                  %(prog)s export --weights best.pt --format onnx
+
+                Dataset formats (auto-detected):
+                  Badger Factory - Keypoint Detection   yolo/images/*.7z + labels/*.7z
+                  Badger Factory - Object Detection      (same layout)
+                  Badger Factory - Image Classification  classifier/evolving_ds_*/{train,val}.7z
+                  COCO export                             coco/{train,val}.7z with coco_instances.json
+                  Plain YOLO / COCO                       already extracted on disk
+
+                Examples:
+                  %(prog)s                                          # train using train_config.yaml
+                  %(prog)s train /data/dataset/ --task detection
+                  %(prog)s predict --weights runs/train_*/checkpoint_best.pt --source image.jpg
+                  %(prog)s val --weights checkpoint_best.pt --data /data/val/
+                  %(prog)s export --weights checkpoint_best.pt --format onnx
+            """),
+        )
     parser.add_argument(
         "dataset",
         type=str,
@@ -1508,9 +2028,29 @@ def main():
     parser.add_argument("--resume", type=str, default=None, help="Checkpoint path to resume from")
     parser.add_argument("--workspace", type=str, default=None, help="Working directory")
     parser.add_argument("--no-setup", action="store_true", help="Skip auto-setup")
+    parser.add_argument(
+        "--upgrade",
+        action="store_true",
+        help="Force-upgrade badger_vision to the version bundled with this script",
+    )
+    parser.add_argument(
+        "--pretrained",
+        action="store_true",
+        default=None,
+        help="Use ImageNet-pretrained backbone weights (faster convergence)",
+    )
+    parser.add_argument(
+        "--from-scratch",
+        action="store_true",
+        default=None,
+        help="Train from scratch (random weights)",
+    )
+    parser.set_defaults(command="train")
+    return parser
 
-    args = parser.parse_args()
 
+def _handle_train(args):
+    """Execute the train command."""
     # ── Load config (train_config.yaml) ──
     tcfg = load_train_config(args.config)
 
@@ -1528,11 +2068,21 @@ def main():
     resume = args.resume or tcfg.get("resume") or None
     workspace_str = args.workspace or tcfg.get("workspace", "badger_vision_workspace")
 
+    # Pretrained flag: CLI overrides config
+    if args.from_scratch:
+        tcfg["pretrained"] = False
+    elif args.pretrained:
+        tcfg["pretrained"] = True
+
     # ── Auto-setup ──
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent
     if not args.no_setup:
         auto_setup(repo_root)
+
+    # ── Force upgrade if requested ──
+    if args.upgrade:
+        upgrade_library(force=True)
 
     # ── Device (from config) ──
     device = resolve_device(tcfg.get("device", "auto"))
@@ -1557,14 +2107,35 @@ def main():
             log.error("Invalid choice: %s", choice)
             sys.exit(1)
     log.info("Task: %s", task)
+    log.info("Backbone: %s (%s)", model_type, "pretrained" if tcfg.get("pretrained") else "from scratch")
 
     # ── Workspace ──
     workspace = Path(workspace_str).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
 
     # ── Dataset ──
-    use_synthetic = not dataset_arg
-    if use_synthetic:
+    explicit_train_ann = tcfg.get("train_annotations", "")
+    explicit_val_ann = tcfg.get("val_annotations", "")
+    explicit_train_path = tcfg.get("train_path", "")
+    explicit_val_path = tcfg.get("val_path", "")
+    explicit_kpt_ann = tcfg.get("keypoints_annotations", "")
+
+    use_explicit = bool(explicit_train_ann and explicit_train_path)
+
+    use_synthetic = not dataset_arg and not use_explicit
+    if use_explicit:
+        log.info("Using explicit dataset paths from config")
+        data_info: dict = {
+            "train_img_dir": str(Path(explicit_train_path).resolve()),
+            "train_ann_file": str(Path(explicit_train_ann).resolve()),
+            "val_img_dir": str(Path(explicit_val_path).resolve()) if explicit_val_path else None,
+            "val_ann_file": str(Path(explicit_val_ann).resolve()) if explicit_val_ann else None,
+        }
+        if task == "keypoints" and explicit_kpt_ann:
+            log.info("Keypoints annotations: %s", explicit_kpt_ann)
+            data_info["train_ann_file"] = str(Path(explicit_kpt_ann).resolve())
+
+    elif use_synthetic:
         log.info("No dataset supplied — generating synthetic demo data")
         if task is None:
             task = "detection"
@@ -1576,7 +2147,6 @@ def main():
             log.error("Dataset path does not exist: %s", dataset_path)
             sys.exit(1)
 
-        # Extract top-level archive if needed
         if dataset_path.is_file() and is_archive(dataset_path):
             extract_dest = workspace / "dataset"
             if extract_dest.exists():
@@ -1585,12 +2155,10 @@ def main():
         else:
             dataset_root = dataset_path
 
-        # Navigate into the right sub-folder for the task
         dataset_root = resolve_dataset_root(dataset_root, task)
         log.info("Dataset root: %s", dataset_root)
 
-        # ── Detect format & prepare ──
-        fmt = detect_format(dataset_root)
+        fmt = detect_format(dataset_root, task)
         log.info("Detected format: %s", fmt)
 
         if fmt == "badger_yolo":
@@ -1598,8 +2166,10 @@ def main():
             if not classes_txt.exists():
                 classes_txt = None
             data_info = prepare_badger_yolo(dataset_root, workspace, classes_txt)
-        elif fmt == "badger_classifier":
+        elif fmt in ("badger_classifier",):
             data_info = prepare_badger_classifier(dataset_root, workspace)
+        elif fmt == "classifier_folder":
+            data_info = prepare_classifier_folder(dataset_root, workspace)
         elif fmt == "coco_archive":
             data_info = prepare_coco_archive(dataset_root, workspace)
         elif fmt == "yolo_flat":
@@ -1612,6 +2182,7 @@ def main():
                 "  Expected one of:\n"
                 "    - Badger Factory YOLO:   images/{train,val}.7z + labels/{train,val}.7z\n"
                 "    - Badger Factory Class.: evolving_ds_*/{train,val}.7z\n"
+                "    - Classification folder: {train,val}/<class_name>/<images>\n"
                 "    - COCO archive:           {train,val}.7z with coco_instances.json\n"
                 "    - Plain YOLO:             images/ + labels/ dirs\n"
                 "    - Plain COCO:             annotations.json + images/",
@@ -1619,9 +2190,11 @@ def main():
             )
             sys.exit(1)
 
+    # ── Validate all dataset paths ──
     log.info("Train: %s", data_info["train_img_dir"])
     if data_info.get("val_img_dir"):
         log.info("Val  : %s", data_info["val_img_dir"])
+    validate_dataset_paths(data_info, task)
 
     # ── Num classes & batch size ──
     num_classes = detect_num_classes(data_info["train_ann_file"])
@@ -1637,7 +2210,6 @@ def main():
             batch_size = 2
             log.info("CPU mode — batch size: %d", batch_size)
 
-    # ── Configs ──
     model_cfg, data_cfg = write_configs(
         workspace,
         data_info,
@@ -1650,7 +2222,6 @@ def main():
         train_config=tcfg,
     )
 
-    # ── Train ──
     run_training(
         model_cfg,
         data_cfg,
@@ -1662,6 +2233,116 @@ def main():
         task=task,
         train_config=tcfg,
     )
+
+
+def _handle_predict(args):
+    """Execute the predict command."""
+    device = resolve_device(getattr(args, "device", "auto") or "auto")
+    run_predict(
+        weights=args.weights,
+        source=args.source,
+        config_path=args.config,
+        device=device,
+        conf=args.conf,
+    )
+
+
+def _handle_val(args):
+    """Execute the val command."""
+    device = resolve_device(getattr(args, "device", "auto") or "auto")
+    run_val(
+        weights=args.weights,
+        data_dir=args.data,
+        config_path=args.config,
+        device=device,
+        task=args.task or "detection",
+    )
+
+
+def _handle_export(args):
+    """Execute the export command."""
+    device = resolve_device(getattr(args, "device", "cpu") or "cpu")
+    run_export(
+        weights=args.weights,
+        config_path=args.config,
+        device=device,
+        fmt=args.format,
+        output=args.output,
+    )
+
+
+def main():
+    # Peek at argv to decide if user passed a subcommand or a legacy-style call
+    known_commands = {"train", "predict", "val", "export"}
+    first_arg = sys.argv[1] if len(sys.argv) > 1 else None
+
+    if first_arg in known_commands:
+        # Subcommand mode
+        root = argparse.ArgumentParser(
+            description="Badger_vision — Production-Ready Training & Inference",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=textwrap.dedent("""\
+                Commands:
+                  train    Train a model (default)
+                  predict  Run inference on images
+                  val      Validate a trained model
+                  export   Export model to ONNX / TorchScript / TensorRT
+            """),
+        )
+        subs = root.add_subparsers(dest="command")
+
+        # train
+        _build_train_parser(subs)
+
+        # predict
+        p_predict = subs.add_parser("predict", help="Run inference on images")
+        p_predict.add_argument("--weights", type=str, required=True, help="Path to checkpoint (.pt)")
+        p_predict.add_argument("--source", type=str, required=True, help="Image file or directory")
+        p_predict.add_argument(
+            "--config", type=str, default=None, help="Model config YAML (optional if saved in checkpoint)"
+        )
+        p_predict.add_argument("--conf", type=float, default=0.25, help="Confidence threshold")
+        p_predict.add_argument("--device", type=str, default="auto", help="Device (auto/cpu/0)")
+        p_predict.set_defaults(command="predict")
+
+        # val
+        p_val = subs.add_parser("val", help="Validate a trained model on a dataset")
+        p_val.add_argument("--weights", type=str, required=True, help="Path to checkpoint (.pt)")
+        p_val.add_argument("--data", type=str, required=True, help="Path to validation data dir or annotation JSON")
+        p_val.add_argument("--config", type=str, default=None, help="Model config YAML")
+        p_val.add_argument("--task", type=str, default=None, choices=["detection", "keypoints", "classification"])
+        p_val.add_argument("--device", type=str, default="auto", help="Device (auto/cpu/0)")
+        p_val.set_defaults(command="val")
+
+        # export
+        p_export = subs.add_parser("export", help="Export model to deployment format")
+        p_export.add_argument("--weights", type=str, required=True, help="Path to checkpoint (.pt)")
+        p_export.add_argument(
+            "--format", type=str, default="onnx", choices=["onnx", "torchscript", "tensorrt", "openvino"]
+        )
+        p_export.add_argument("--config", type=str, default=None, help="Model config YAML")
+        p_export.add_argument("--output", type=str, default=None, help="Output path")
+        p_export.add_argument("--device", type=str, default="cpu", help="Device (cpu/0)")
+        p_export.set_defaults(command="export")
+
+        args = root.parse_args()
+
+        handlers = {
+            "train": _handle_train,
+            "predict": _handle_predict,
+            "val": _handle_val,
+            "export": _handle_export,
+        }
+        handler = handlers.get(args.command)
+        if handler is None:
+            root.print_help()
+            sys.exit(1)
+        handler(args)
+    else:
+        # Legacy mode: no subcommand → default to train (backward compatible)
+        parser = _build_train_parser()
+        args = parser.parse_args()
+        _handle_train(args)
 
 
 if __name__ == "__main__":
