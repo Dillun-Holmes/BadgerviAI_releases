@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import subprocess
@@ -44,16 +43,13 @@ from badger_vision import Badger_vision  # noqa: E402
 from badger_vision.models.badger_resnext import BadgerResNeXtModel  # noqa: E402
 from badger_vision.utils.profiler import model_summary  # noqa: E402
 
-# ── 1. Load linux_train helpers ────────────────────────────
+# ── 1. Load shared training helpers ────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent if (SCRIPT_DIR.parent / "pyproject.toml").exists() else SCRIPT_DIR
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-spec = importlib.util.spec_from_file_location(
-    "linux_train",
-    str(SCRIPT_DIR / "linux_train.py"),
-)
-lt = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(lt)
+from badger_vision.training import pipeline as lt  # noqa: E402
 
 # ── 2. Load train_config.yaml ─────────────────────────────
 TCFG = lt.load_train_config()
@@ -119,26 +115,16 @@ def _run_real_dataset(args: argparse.Namespace) -> None:
         dataset_root = dataset_path
 
     dataset_root = lt.resolve_dataset_root(dataset_root, task)
-    fmt = lt.detect_format(dataset_root)
+    fmt = lt.detect_format(dataset_root, task)
     print(f"Detected format: {fmt}")
 
-    if fmt == "badger_yolo":
-        classes_txt = dataset_root / "classes.txt"
-        data_info = lt.prepare_badger_yolo(
-            dataset_root,
-            workspace,
-            classes_txt if classes_txt.exists() else None,
-        )
-    elif fmt == "badger_classifier":
-        data_info = lt.prepare_badger_classifier(dataset_root, workspace)
-    elif fmt == "coco_archive":
-        data_info = lt.prepare_coco_archive(dataset_root, workspace)
-    elif fmt == "yolo_flat":
-        data_info = lt.prepare_yolo_flat(dataset_root, workspace)
-    elif fmt == "coco_flat":
-        data_info = lt.prepare_coco_flat(dataset_root, workspace)
-    else:
-        raise RuntimeError(f"Unknown dataset format in {dataset_root}")
+    classes_txt = dataset_root / "classes.txt"
+    data_info = lt.prepare_dataset(
+        dataset_root,
+        workspace,
+        fmt=fmt,
+        classes_txt=classes_txt if classes_txt.exists() else None,
+    )
 
     num_classes = lt.detect_num_classes(data_info["train_ann_file"])
     num_train = lt.count_images(data_info["train_ann_file"])

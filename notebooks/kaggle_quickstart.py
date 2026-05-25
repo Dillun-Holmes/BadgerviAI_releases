@@ -11,7 +11,6 @@
 # -----------------------------------------------------------
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -44,7 +43,7 @@ else:
     print("WARNING: No GPU! Enable via Settings > Accelerator > GPU T4 x2")
     DEVICE = torch.device("cpu")
 
-# ── 2. Load linux_train helpers ────────────────────────────
+# ── 2. Load shared training helpers ────────────────────────
 REPO_DIR = Path("/kaggle/working/AI_vision_model")
 if not REPO_DIR.exists():
     subprocess.check_call(
@@ -52,13 +51,10 @@ if not REPO_DIR.exists():
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+if str(REPO_DIR) not in sys.path:
+    sys.path.insert(0, str(REPO_DIR))
 
-spec = importlib.util.spec_from_file_location(
-    "linux_train",
-    str(REPO_DIR / "notebooks" / "linux_train.py"),
-)
-lt = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(lt)
+from badger_vision.training import pipeline as lt  # noqa: E402
 
 from badger_vision import Badger_vision  # noqa: E402
 from badger_vision.models.badger_resnext import BadgerResNeXtModel  # noqa: E402
@@ -98,26 +94,16 @@ if DATASET_PATH and Path(DATASET_PATH).exists():
         dataset_root = dataset_path
 
     dataset_root = lt.resolve_dataset_root(dataset_root, TASK)
-    fmt = lt.detect_format(dataset_root)
+    fmt = lt.detect_format(dataset_root, TASK)
     print(f"Detected format: {fmt}")
 
-    if fmt == "badger_yolo":
-        classes_txt = dataset_root / "classes.txt"
-        data_info = lt.prepare_badger_yolo(
-            dataset_root,
-            WORKSPACE,
-            classes_txt if classes_txt.exists() else None,
-        )
-    elif fmt == "badger_classifier":
-        data_info = lt.prepare_badger_classifier(dataset_root, WORKSPACE)
-    elif fmt == "coco_archive":
-        data_info = lt.prepare_coco_archive(dataset_root, WORKSPACE)
-    elif fmt == "yolo_flat":
-        data_info = lt.prepare_yolo_flat(dataset_root, WORKSPACE)
-    elif fmt == "coco_flat":
-        data_info = lt.prepare_coco_flat(dataset_root, WORKSPACE)
-    else:
-        raise RuntimeError(f"Unknown dataset format in {dataset_root}")
+    classes_txt = dataset_root / "classes.txt"
+    data_info = lt.prepare_dataset(
+        dataset_root,
+        WORKSPACE,
+        fmt=fmt,
+        classes_txt=classes_txt if classes_txt.exists() else None,
+    )
 
     num_classes = lt.detect_num_classes(data_info["train_ann_file"])
     num_train = lt.count_images(data_info["train_ann_file"])

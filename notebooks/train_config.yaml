@@ -8,7 +8,7 @@
 # ── Dataset ────────────────────────────────────────────────
 # Path to dataset folder or archive (.zip .7z .tar.gz .rar).
 # Leave empty ("") to run a quick synthetic demo.
-dataset_path: ""
+dataset_path: "/home/dillun/Downloads/Ai train1234567"
 
 # ── Explicit split paths (optional) ───────────────────────
 # When both train_path and train_annotations are set, the script
@@ -22,7 +22,7 @@ keypoints_annotations: ""   # Path to keypoints COCO JSON (overrides train_annot
 
 # ── Task ───────────────────────────────────────────────────
 # One of: "detection", "keypoints", "classification"
-task: "detection"
+task: "classification"
 
 # ── Model ──────────────────────────────────────────────────
 # Architecture: "resnext" or "convnext"
@@ -49,7 +49,7 @@ convnext_config:
 # ── Training ───────────────────────────────────────────────
 epochs: 100
 batch_size: 0        # 0 = auto (picks best size for your GPU VRAM)
-img_size: 640
+img_size: 96
 lr: 0.01
 warmup_epochs: 3
 accumulation_steps: 1
